@@ -123,13 +123,13 @@ async def on_message(message):
 
 
 def get_main_guild(ctx=None):
+    if ctx and ctx.guild:
+        return ctx.guild
+
     if GUILD_ID:
         guild = bot.get_guild(GUILD_ID)
         if guild is not None:
             return guild
-
-    if ctx and ctx.guild:
-        return ctx.guild
 
     if len(bot.guilds) == 1:
         return bot.guilds[0]
