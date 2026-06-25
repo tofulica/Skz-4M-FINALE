@@ -26,12 +26,15 @@ FARM_REPORT_CHANNEL_NAME = (os.getenv("FARM_REPORT_CHANNEL_NAME") or "farms").st
 CONTENT_REQUEST_CHANNEL_NAME = (os.getenv("CONTENT_REQUEST_CHANNEL_NAME") or "content-requests").strip().lower().replace("#", "")
 
 TZ = ZoneInfo("Europe/Berlin")
-DATA_FILE = "clock_data.json"
+
+DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR") or "."
+os.makedirs(DATA_DIR, exist_ok=True)
+DATA_FILE = os.path.join(DATA_DIR, "clock_data.json")
 
 EARLY_STREAK_WINDOW_MINUTES = 180
-LATE_STREAK_WINDOW_MINUTES = 180
 NO_CLOCKIN_ALERT_AFTER_MINUTES = 5
 NO_CLOCKIN_ALERT_WINDOW_MINUTES = 10
+ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES = 15
 
 
 def load_clock_data():
@@ -152,6 +155,79 @@ def get_channel_prefix(channel_name):
         return channel_name.split("-")[0].strip()
 
     return channel_name.strip()
+
+
+def get_channel_key_from_parts(guild_id, channel_name):
+    guild_part = str(guild_id) if guild_id else "unknown-guild"
+    return f"{guild_part}:{normalize_name(channel_name)}"
+
+
+def get_channel_key(ctx):
+    guild_id = ctx.guild.id if ctx.guild else None
+    return get_channel_key_from_parts(guild_id, ctx.channel.name)
+
+
+def get_channel_name_from_key(channel_key):
+    if ":" in channel_key:
+        return channel_key.split(":", 1)[1]
+
+    return channel_key
+
+
+def get_channel_storage_key_for_checkout(guild_id, channel_name):
+    channel_name = normalize_name(channel_name)
+    channel_key = get_channel_key_from_parts(guild_id, channel_name)
+
+    if channel_key in clock_data["clocked_in_channels"]:
+        return channel_key
+
+    if channel_name in clock_data["clocked_in_channels"]:
+        return channel_name
+
+    return channel_key
+
+
+def get_clockins_for_guild_channel(guild_id, channel_name):
+    channel_name = normalize_name(channel_name)
+    channel_key = get_channel_key_from_parts(guild_id, channel_name)
+
+    if channel_key in clock_data["clocked_in_channels"]:
+        return clock_data["clocked_in_channels"].get(channel_key, [])
+
+    return clock_data["clocked_in_channels"].get(channel_name, [])
+
+
+def is_channel_clocked_in(guild_id, channel_name):
+    clockins = get_clockins_for_guild_channel(guild_id, channel_name)
+    return len(clockins) > 0
+
+
+def parse_clockin_time(clockin):
+    try:
+        return datetime.strptime(
+            clockin.get("time", ""),
+            "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=TZ)
+    except Exception:
+        return None
+
+
+def sendable_chunks(text, limit=1900):
+    chunks = []
+    current = ""
+
+    for line in text.splitlines(True):
+        if len(current) + len(line) > limit:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += line
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 def member_matches_username(member, username):
@@ -318,66 +394,6 @@ def can_manage_streaks(member):
     return False
 
 
-def find_streak_shift_status(member, channel_name):
-    channel_name = normalize_name(channel_name)
-
-    now = datetime.now(TZ)
-    now_check = now.replace(second=0, microsecond=0)
-    today = now.strftime("%Y-%m-%d")
-
-    possible_matches = []
-
-    for shift in schedule_cache:
-        sheet_channel_name = normalize_name(shift.get("channel_name"))
-
-        if sheet_channel_name != channel_name:
-            continue
-
-        try:
-            shift_datetime = datetime.strptime(
-                f"{today} {shift['shift_time']}",
-                "%Y-%m-%d %H:%M"
-            ).replace(tzinfo=TZ)
-        except ValueError:
-            continue
-
-        early_start = shift_datetime - timedelta(minutes=EARLY_STREAK_WINDOW_MINUTES)
-        late_end = shift_datetime + timedelta(minutes=LATE_STREAK_WINDOW_MINUTES)
-
-        is_scheduled_chatter = member_matches_username(
-            member,
-            shift.get("scheduled_chatter_username")
-        )
-
-        if early_start <= now_check <= shift_datetime:
-            distance = abs((shift_datetime - now_check).total_seconds())
-            possible_matches.append({
-                "status": "on_time",
-                "shift_datetime": shift_datetime,
-                "distance": distance,
-                "account": shift.get("account", "Unknown Model"),
-                "is_scheduled_chatter": is_scheduled_chatter
-            })
-
-        elif shift_datetime < now_check <= late_end:
-            distance = abs((now_check - shift_datetime).total_seconds())
-            possible_matches.append({
-                "status": "late",
-                "shift_datetime": shift_datetime,
-                "distance": distance,
-                "account": shift.get("account", "Unknown Model"),
-                "is_scheduled_chatter": is_scheduled_chatter
-            })
-
-    if not possible_matches:
-        return "not_scheduled", None
-
-    possible_matches.sort(key=lambda item: item["distance"])
-    best_match = possible_matches[0]
-
-    return best_match["status"], best_match
-
-
 def update_streak_for_clockin(member, channel_name, guild_id=None):
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     now_text = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -385,40 +401,95 @@ def update_streak_for_clockin(member, channel_name, guild_id=None):
     streak_data = get_or_create_streak_data(member)
 
     streak_data["last_clockin_date"] = today
-    streak_data["last_clockin_channel"] = channel_name
+    streak_data["last_clockin_channel"] = normalize_name(channel_name)
     streak_data["last_clockin_guild_id"] = str(guild_id) if guild_id else None
 
     if streak_data.get("first_clockin_date") == today:
-        return streak_data.get("streak", 0), False
-
-    shift_status, shift_info = find_streak_shift_status(member, channel_name)
+        return streak_data.get("streak", 0), "already_counted_today"
 
     streak_data["first_clockin_date"] = today
-    streak_data["first_clockin_status"] = shift_status
-    streak_data["first_clockin_channel"] = channel_name
+    streak_data["first_clockin_status"] = "counted"
+    streak_data["first_clockin_channel"] = normalize_name(channel_name)
     streak_data["first_clockin_time"] = now_text
 
-    if shift_status == "not_scheduled":
-        return streak_data.get("streak", 0), False
+    if streak_data.get("last_counted_date") != today:
+        streak_data["streak"] = streak_data.get("streak", 0) + 1
+        streak_data["last_counted_date"] = today
 
-    if shift_status == "on_time":
-        if streak_data.get("last_counted_date") != today:
-            streak_data["streak"] = streak_data.get("streak", 0) + 1
-            streak_data["last_counted_date"] = today
+    return streak_data.get("streak", 0), "counted"
 
-        return streak_data.get("streak", 0), False
 
-    if shift_status == "late":
-        if streak_data.get("last_reset_date") != today:
-            streak_data["streak"] = 0
-            streak_data["last_reset_date"] = today
-            streak_data["last_counted_date"] = today
+def get_shift_datetimes_for_channel(channel_name):
+    channel_name = normalize_name(channel_name)
+    now = datetime.now(TZ)
+    shifts = []
 
-            return streak_data.get("streak", 0), True
+    for shift in schedule_cache:
+        if normalize_name(shift.get("channel_name")) != channel_name:
+            continue
 
-        return streak_data.get("streak", 0), False
+        for day_offset in [-1, 0, 1]:
+            shift_date = (now + timedelta(days=day_offset)).strftime("%Y-%m-%d")
 
-    return streak_data.get("streak", 0), False
+            try:
+                shift_datetime = datetime.strptime(
+                    f"{shift_date} {shift['shift_time']}",
+                    "%Y-%m-%d %H:%M"
+                ).replace(tzinfo=TZ)
+            except ValueError:
+                continue
+
+            shifts.append(shift_datetime)
+
+    shifts = sorted(list(set(shifts)))
+    return shifts
+
+
+def get_allstatus_target_shift(channel_name):
+    shifts = get_shift_datetimes_for_channel(channel_name)
+
+    if not shifts:
+        return None
+
+    now = datetime.now(TZ)
+    target_shift = None
+
+    for shift_datetime in shifts:
+        switch_time = shift_datetime - timedelta(minutes=ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES)
+
+        if now >= switch_time:
+            target_shift = shift_datetime
+
+    if target_shift is not None:
+        return target_shift
+
+    for shift_datetime in shifts:
+        if shift_datetime > now:
+            return shift_datetime
+
+    return shifts[-1]
+
+
+def get_allstatus_valid_clockins(guild_id, channel_name):
+    clockins = get_clockins_for_guild_channel(guild_id, channel_name)
+    target_shift = get_allstatus_target_shift(channel_name)
+
+    if target_shift is None:
+        return clockins, None
+
+    cutoff_time = target_shift - timedelta(minutes=EARLY_STREAK_WINDOW_MINUTES)
+    valid_clockins = []
+
+    for clockin in clockins:
+        clockin_time = parse_clockin_time(clockin)
+
+        if clockin_time is None:
+            continue
+
+        if clockin_time >= cutoff_time:
+            valid_clockins.append(clockin)
+
+    return valid_clockins, target_shift
 
 
 def create_announcement_batch_id():
@@ -446,6 +517,7 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
     print(f"Loaded {len(schedule_cache)} shifts.")
+    print(f"Using data file: {DATA_FILE}")
 
     print("Servers bot can see:")
     for guild in bot.guilds:
@@ -463,13 +535,15 @@ async def ci(ctx):
     user_id = str(ctx.author.id)
     username = ctx.author.name.lower()
     display_name = ctx.author.display_name
-    channel_name = ctx.channel.name.lower()
+    channel_name = normalize_name(ctx.channel.name)
+    channel_key = get_channel_key(ctx)
+    guild_id = ctx.guild.id if ctx.guild else None
     now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-    if channel_name not in clock_data["clocked_in_channels"]:
-        clock_data["clocked_in_channels"][channel_name] = []
+    if channel_key not in clock_data["clocked_in_channels"]:
+        clock_data["clocked_in_channels"][channel_key] = []
 
-    for clockin in clock_data["clocked_in_channels"][channel_name]:
+    for clockin in clock_data["clocked_in_channels"][channel_key]:
         old_user_id = clockin.get("user_id")
         old_username = clockin.get("username")
 
@@ -477,40 +551,45 @@ async def ci(ctx):
             await ctx.message.add_reaction("❌")
             return
 
-    clock_data["clocked_in_channels"][channel_name].append({
+    clock_data["clocked_in_channels"][channel_key].append({
         "user_id": user_id,
         "username": username,
         "display_name": display_name,
-        "time": now
+        "time": now,
+        "channel_name": channel_name,
+        "guild_id": str(guild_id) if guild_id else None
     })
 
-    guild_id = ctx.guild.id if ctx.guild else None
-    streak, streak_was_reset = update_streak_for_clockin(ctx.author, channel_name, guild_id)
+    streak, streak_status = update_streak_for_clockin(ctx.author, channel_name, guild_id)
 
     save_clock_data()
 
     await ctx.message.add_reaction("✅")
-
-    if streak_was_reset:
-        await ctx.send(f"🔥 Streak {streak} - your streak has been reset because of a late clock-in")
-    else:
-        await ctx.send(f"🔥 Streak {streak}")
+    await ctx.send(f"🔥 Streak {streak}")
 
 
 @bot.command(name="co")
 async def co(ctx):
+    current_channel_name = normalize_name(ctx.channel.name)
+
+    if "clock" not in current_channel_name:
+        await ctx.send("❌ Clock-outs must be submitted in the model's **clock-in** channel.")
+        return
+
     user_id = str(ctx.author.id)
     username = ctx.author.name.lower()
-    channel_name = ctx.channel.name.lower()
+    channel_name = normalize_name(ctx.channel.name)
+    guild_id = ctx.guild.id if ctx.guild else None
+    channel_key = get_channel_storage_key_for_checkout(guild_id, channel_name)
     now = datetime.now(TZ)
 
-    if channel_name not in clock_data["clocked_in_channels"]:
+    if channel_key not in clock_data["clocked_in_channels"]:
         await ctx.message.add_reaction("❌")
         return
 
     user_clockin = None
 
-    for clockin in clock_data["clocked_in_channels"][channel_name]:
+    for clockin in clock_data["clocked_in_channels"][channel_key]:
         old_user_id = clockin.get("user_id")
         old_username = clockin.get("username")
 
@@ -529,10 +608,10 @@ async def co(ctx):
 
     duration = now - start
 
-    clock_data["clocked_in_channels"][channel_name].remove(user_clockin)
+    clock_data["clocked_in_channels"][channel_key].remove(user_clockin)
 
-    if not clock_data["clocked_in_channels"][channel_name]:
-        del clock_data["clocked_in_channels"][channel_name]
+    if not clock_data["clocked_in_channels"][channel_key]:
+        del clock_data["clocked_in_channels"][channel_key]
 
     save_clock_data()
 
@@ -554,18 +633,92 @@ async def status(ctx):
         await ctx.send("Nobody is currently clocked in on any account.")
         return
 
+    current_guild_id = str(ctx.guild.id) if ctx.guild else None
     msg = "**Currently clocked in by account/channel:**\n"
+    shown_any = False
 
-    for channel_name, clockins in clock_data["clocked_in_channels"].items():
-        msg += f"\n**{channel_name}**\n"
+    for channel_key, clockins in clock_data["clocked_in_channels"].items():
+        if current_guild_id and ":" in channel_key and not channel_key.startswith(f"{current_guild_id}:"):
+            continue
+
+        display_channel_name = get_channel_name_from_key(channel_key)
+
+        if clockins:
+            display_channel_name = clockins[0].get("channel_name", display_channel_name)
+
+        msg += f"\n**{display_channel_name}**\n"
 
         for clockin in clockins:
             name = clockin.get("display_name") or clockin.get("username", "unknown")
             time = clockin.get("time", "unknown time")
 
             msg += f"- {name} since **{time}**\n"
+            shown_any = True
+
+    if not shown_any:
+        await ctx.send("Nobody is currently clocked in on this server.")
+        return
 
     await ctx.send(msg)
+
+
+@bot.command(name="allstatus")
+async def allstatus(ctx):
+    guild = get_main_guild(ctx)
+
+    if guild is None:
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        return
+
+    if not schedule_cache:
+        await ctx.send("❌ Schedule is empty. Use `!reloadschedule` first.")
+        return
+
+    guild_id = guild.id
+    unique_channels = []
+    seen_channels = set()
+
+    for shift in schedule_cache:
+        channel_name = normalize_name(shift.get("channel_name"))
+
+        if not channel_name or channel_name in seen_channels:
+            continue
+
+        seen_channels.add(channel_name)
+        unique_channels.append({
+            "account": shift.get("account", "Unknown Model"),
+            "channel_name": channel_name
+        })
+
+    now_text = datetime.now(TZ).strftime("%H:%M")
+    msg = f"**📊 All Model Status** — `{now_text}`\n"
+    msg += "_15 minutes before the next shift, old clock-ins from the previous shift do not count here._\n\n"
+
+    for item in unique_channels:
+        account = item["account"]
+        channel_name = item["channel_name"]
+        valid_clockins, target_shift = get_allstatus_valid_clockins(guild_id, channel_name)
+
+        if target_shift is not None:
+            shift_text = target_shift.strftime("%H:%M")
+        else:
+            shift_text = "unknown"
+
+        if valid_clockins:
+            names = []
+
+            for clockin in valid_clockins:
+                name = clockin.get("display_name") or clockin.get("username", "unknown")
+                clockin_time = clockin.get("time", "unknown time")
+                names.append(f"{name} since `{clockin_time}`")
+
+            msg += f"✅ **{account}** (`#{channel_name}` / shift `{shift_text}`)\n"
+            msg += "   " + "; ".join(names) + "\n"
+        else:
+            msg += f"❌ **{account}** (`#{channel_name}` / shift `{shift_text}`) — nobody ready for this shift\n"
+
+    for chunk in sendable_chunks(msg):
+        await ctx.send(chunk)
 
 
 @bot.command()
@@ -583,12 +736,19 @@ async def reloadschedule(ctx):
 
 
 @bot.command(name="setstreak")
-async def setstreak(ctx, user_identifier: str = None, streak_value: int = None):
+async def setstreak(ctx, *, args: str = None):
     if not can_manage_streaks(ctx.author):
         await ctx.send("❌ You don't have permission to set streaks.")
         return
 
-    if user_identifier is None or streak_value is None:
+    if not args:
+        await ctx.send("Use it like this: `!setstreak username 12`")
+        return
+
+    try:
+        user_identifier, streak_text = args.rsplit(" ", 1)
+        streak_value = int(streak_text)
+    except ValueError:
         await ctx.send("Use it like this: `!setstreak username 12`")
         return
 
@@ -615,6 +775,7 @@ async def setstreak(ctx, user_identifier: str = None, streak_value: int = None):
 
     old_streak = streak_data.get("streak", 0)
     last_clockin_channel_name = streak_data.get("last_clockin_channel")
+    last_clockin_guild_id = streak_data.get("last_clockin_guild_id")
 
     streak_data["streak"] = streak_value
     streak_data["last_counted_date"] = today
@@ -633,8 +794,15 @@ async def setstreak(ctx, user_identifier: str = None, streak_value: int = None):
         f"✅ Streak for **{member.display_name}** has been set from **{old_streak}** to **{streak_value}**."
     )
 
+    notification_guild = guild
+
+    if last_clockin_guild_id and str(last_clockin_guild_id).isdigit():
+        saved_guild = bot.get_guild(int(last_clockin_guild_id))
+        if saved_guild is not None:
+            notification_guild = saved_guild
+
     if last_clockin_channel_name:
-        last_clockin_channel = find_channel_by_name(guild, last_clockin_channel_name)
+        last_clockin_channel = find_channel_by_name(notification_guild, last_clockin_channel_name)
 
         if last_clockin_channel is not None:
             await last_clockin_channel.send(
@@ -1027,6 +1195,7 @@ async def checkreminders(ctx):
 
     checked = 0
     possible = 0
+    guild_id = guild.id
 
     for shift in schedule_cache:
         checked += 1
@@ -1045,14 +1214,11 @@ async def checkreminders(ctx):
         reminder_time = shift_datetime - timedelta(minutes=10)
 
         scheduled_username = shift["scheduled_chatter_username"]
-        channel_name = shift["channel_name"]
+        channel_name = normalize_name(shift["channel_name"])
 
-        reminder_key = f"{today}-{shift['account']}-{channel_name}-{shift['shift_time']}"
+        reminder_key = f"{guild_id}-{today}-{shift['account']}-{channel_name}-{shift['shift_time']}"
 
-        someone_clocked_in_for_this_channel = (
-            channel_name in clock_data["clocked_in_channels"]
-            and len(clock_data["clocked_in_channels"][channel_name]) > 0
-        )
+        someone_clocked_in_for_this_channel = is_channel_clocked_in(guild_id, channel_name)
 
         should_warn = (
             reminder_time <= now < shift_datetime
@@ -1122,6 +1288,8 @@ async def shift_reminder_loop():
         print("Guild not found.")
         return
 
+    guild_id = guild.id
+
     for shift in schedule_cache:
         try:
             shift_datetime = datetime.strptime(
@@ -1139,15 +1307,12 @@ async def shift_reminder_loop():
         )
 
         scheduled_username = shift["scheduled_chatter_username"]
-        channel_name = shift["channel_name"]
+        channel_name = normalize_name(shift["channel_name"])
 
-        reminder_key = f"{today}-{shift['account']}-{channel_name}-{shift['shift_time']}"
-        no_clockin_alert_key = f"{today}-{shift['account']}-{channel_name}-{shift['shift_time']}-no-clockin"
+        reminder_key = f"{guild_id}-{today}-{shift['account']}-{channel_name}-{shift['shift_time']}"
+        no_clockin_alert_key = f"{guild_id}-{today}-{shift['account']}-{channel_name}-{shift['shift_time']}-no-clockin"
 
-        someone_clocked_in_for_this_channel = (
-            channel_name in clock_data["clocked_in_channels"]
-            and len(clock_data["clocked_in_channels"][channel_name]) > 0
-        )
+        someone_clocked_in_for_this_channel = is_channel_clocked_in(guild_id, channel_name)
 
         should_warn = (
             reminder_time <= now < shift_datetime
