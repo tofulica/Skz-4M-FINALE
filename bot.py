@@ -175,6 +175,21 @@ def find_member_by_username(guild, username):
     return None
 
 
+def find_member_by_identifier(guild, identifier):
+    if not identifier:
+        return None
+
+    identifier = identifier.strip()
+    clean_identifier = identifier.replace("<@", "").replace(">", "").replace("!", "")
+
+    if clean_identifier.isdigit():
+        member = guild.get_member(int(clean_identifier))
+        if member is not None:
+            return member
+
+    return find_member_by_username(guild, identifier)
+
+
 def find_channel_by_name(guild, channel_name):
     channel_name = normalize_name(channel_name)
 
@@ -240,23 +255,66 @@ def get_or_create_streak_data(member):
         clock_data["streaks"] = {}
 
     if user_id not in clock_data["streaks"]:
-        clock_data["streaks"][user_id] = {
-            "username": member.name,
-            "display_name": member.display_name,
-            "streak": 0,
-            "last_counted_date": None,
-            "last_reset_date": None
-        }
+        clock_data["streaks"][user_id] = {}
 
-    clock_data["streaks"][user_id]["username"] = member.name
-    clock_data["streaks"][user_id]["display_name"] = member.display_name
+    streak_data = clock_data["streaks"][user_id]
 
-    return clock_data["streaks"][user_id]
+    defaults = {
+        "username": member.name,
+        "display_name": member.display_name,
+        "streak": 0,
+        "last_counted_date": None,
+        "last_reset_date": None,
+        "first_clockin_date": None,
+        "first_clockin_status": None,
+        "first_clockin_channel": None,
+        "first_clockin_time": None,
+        "last_clockin_date": None,
+        "last_clockin_channel": None,
+        "last_clockin_guild_id": None,
+        "manual_set_date": None,
+        "manual_set_by": None,
+        "manual_set_channel": None
+    }
+
+    for key, value in defaults.items():
+        if key not in streak_data:
+            streak_data[key] = value
+
+    streak_data["username"] = member.name
+    streak_data["display_name"] = member.display_name
+
+    return streak_data
 
 
 def get_current_streak(member):
     streak_data = get_or_create_streak_data(member)
     return streak_data.get("streak", 0)
+
+
+def can_manage_streaks(member):
+    if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+        return True
+
+    allowed_roles = [
+        "owner",
+        "admin",
+        "admins",
+        "manager",
+        "managers",
+        "supervisor",
+        "supervisors",
+        "gm",
+        "management",
+        "menadzer",
+        "menadzeri"
+    ]
+
+    for role in member.roles:
+        if normalize_name(role.name) in allowed_roles:
+            return True
+
+    return False
 
 
 def find_streak_shift_status(member, channel_name):
@@ -319,11 +377,25 @@ def find_streak_shift_status(member, channel_name):
     return best_match["status"], best_match
 
 
-def update_streak_for_clockin(member, channel_name):
+def update_streak_for_clockin(member, channel_name, guild_id=None):
     today = datetime.now(TZ).strftime("%Y-%m-%d")
+    now_text = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     streak_data = get_or_create_streak_data(member)
+
+    streak_data["last_clockin_date"] = today
+    streak_data["last_clockin_channel"] = channel_name
+    streak_data["last_clockin_guild_id"] = str(guild_id) if guild_id else None
+
+    if streak_data.get("first_clockin_date") == today:
+        return streak_data.get("streak", 0), False
+
     shift_status, shift_info = find_streak_shift_status(member, channel_name)
+
+    streak_data["first_clockin_date"] = today
+    streak_data["first_clockin_status"] = shift_status
+    streak_data["first_clockin_channel"] = channel_name
+    streak_data["first_clockin_time"] = now_text
 
     if shift_status == "not_scheduled":
         return streak_data.get("streak", 0), False
@@ -411,7 +483,8 @@ async def ci(ctx):
         "time": now
     })
 
-    streak, streak_was_reset = update_streak_for_clockin(ctx.author, channel_name)
+    guild_id = ctx.guild.id if ctx.guild else None
+    streak, streak_was_reset = update_streak_for_clockin(ctx.author, channel_name, guild_id)
 
     save_clock_data()
 
@@ -506,6 +579,75 @@ async def reloadschedule(ctx):
     await ctx.send(
         f"✅ Schedule reloaded and reminders reset. Shifts loaded: **{len(schedule_cache)}**"
     )
+
+
+@bot.command(name="setstreak")
+async def setstreak(ctx, user_identifier: str = None, streak_value: int = None):
+    if not can_manage_streaks(ctx.author):
+        await ctx.send("❌ You don't have permission to set streaks.")
+        return
+
+    if user_identifier is None or streak_value is None:
+        await ctx.send("Use it like this: `!setstreak username 12`")
+        return
+
+    if streak_value < 0:
+        await ctx.send("❌ Streak cannot be negative.")
+        return
+
+    guild = get_main_guild(ctx)
+
+    if guild is None:
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        return
+
+    member = find_member_by_identifier(guild, user_identifier)
+
+    if member is None:
+        await ctx.send("❌ User not found. Use their Discord username, display name, mention, or Discord ID.")
+        return
+
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    now_text = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    streak_data = get_or_create_streak_data(member)
+
+    old_streak = streak_data.get("streak", 0)
+    last_clockin_channel_name = streak_data.get("last_clockin_channel")
+
+    streak_data["streak"] = streak_value
+    streak_data["last_counted_date"] = today
+    streak_data["last_reset_date"] = None
+    streak_data["first_clockin_date"] = today
+    streak_data["first_clockin_status"] = "manual_set"
+    streak_data["first_clockin_channel"] = f"manual:{ctx.channel.name}"
+    streak_data["first_clockin_time"] = now_text
+    streak_data["manual_set_date"] = now_text
+    streak_data["manual_set_by"] = ctx.author.name
+    streak_data["manual_set_channel"] = ctx.channel.name
+
+    save_clock_data()
+
+    await ctx.send(
+        f"✅ Streak for **{member.display_name}** has been set from **{old_streak}** to **{streak_value}**."
+    )
+
+    if last_clockin_channel_name:
+        last_clockin_channel = find_channel_by_name(guild, last_clockin_channel_name)
+
+        if last_clockin_channel is not None:
+            await last_clockin_channel.send(
+                f"🔥 Streak update for **{member.display_name}**: "
+                f"your streak has been set to **{streak_value}**."
+            )
+        else:
+            await ctx.send(
+                f"⚠️ Streak was set, but I could not find the last clock-in channel: `{last_clockin_channel_name}`"
+            )
+    else:
+        await ctx.send(
+            "⚠️ Streak was set, but this user has no saved last clock-in channel yet."
+        )
 
 
 @bot.command(name="contentrequest", aliases=["cr", "needcontent"])
