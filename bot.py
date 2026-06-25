@@ -31,6 +31,7 @@ DATA_FILE = "clock_data.json"
 EARLY_STREAK_WINDOW_MINUTES = 180
 LATE_STREAK_WINDOW_MINUTES = 180
 NO_CLOCKIN_ALERT_AFTER_MINUTES = 5
+NO_CLOCKIN_ALERT_WINDOW_MINUTES = 10
 
 
 def load_clock_data():
@@ -1133,6 +1134,9 @@ async def shift_reminder_loop():
 
         reminder_time = shift_datetime - timedelta(minutes=10)
         no_clockin_alert_time = shift_datetime + timedelta(minutes=NO_CLOCKIN_ALERT_AFTER_MINUTES)
+        no_clockin_alert_window_end = shift_datetime + timedelta(
+            minutes=NO_CLOCKIN_ALERT_AFTER_MINUTES + NO_CLOCKIN_ALERT_WINDOW_MINUTES
+        )
 
         scheduled_username = shift["scheduled_chatter_username"]
         channel_name = shift["channel_name"]
@@ -1152,7 +1156,7 @@ async def shift_reminder_loop():
         )
 
         should_send_no_clockin_alert = (
-            now >= no_clockin_alert_time
+            no_clockin_alert_time <= now <= no_clockin_alert_window_end
             and not someone_clocked_in_for_this_channel
             and no_clockin_alert_key not in clock_data["no_clockin_alerts"]
         )
@@ -1162,6 +1166,7 @@ async def shift_reminder_loop():
             f"shift={shift_datetime.strftime('%H:%M')} | now={now.strftime('%H:%M')} | "
             f"reminder={reminder_time.strftime('%H:%M')} | "
             f"no_clockin_alert={no_clockin_alert_time.strftime('%H:%M')} | "
+            f"no_clockin_window_end={no_clockin_alert_window_end.strftime('%H:%M')} | "
             f"clocked_in={someone_clocked_in_for_this_channel} | "
             f"already_reminded={reminder_key in clock_data['reminded']} | "
             f"already_no_clockin_alert={no_clockin_alert_key in clock_data['no_clockin_alerts']} | "
@@ -1220,6 +1225,9 @@ async def shift_reminder_loop():
                 print(f"Channel not found for no clock-in alert: {channel_name}")
                 continue
 
+            clock_data["no_clockin_alerts"][no_clockin_alert_key] = True
+            save_clock_data()
+
             supervisor_text = ""
 
             if supervisor_role is not None:
@@ -1231,9 +1239,6 @@ async def shift_reminder_loop():
                 f"**{NO_CLOCKIN_ALERT_AFTER_MINUTES} minutes after shift start**."
                 f"{supervisor_text}"
             )
-
-            clock_data["no_clockin_alerts"][no_clockin_alert_key] = True
-            save_clock_data()
 
 
 bot.run(DISCORD_TOKEN)
