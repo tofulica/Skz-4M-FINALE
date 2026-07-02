@@ -32,9 +32,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DATA_FILE = os.path.join(DATA_DIR, "clock_data.json")
 
 EARLY_STREAK_WINDOW_MINUTES = 180
+LATE_STREAK_WINDOW_MINUTES = 180
 NO_CLOCKIN_ALERT_AFTER_MINUTES = 5
 NO_CLOCKIN_ALERT_WINDOW_MINUTES = 10
 ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES = 15
+
+STREAK_SHIFT_TIMES_RAW = os.getenv("STREAK_SHIFT_TIMES") or "02:00,10:00,18:00"
+STREAK_SHIFT_TIMES = [
+    shift_time.strip()
+    for shift_time in STREAK_SHIFT_TIMES_RAW.split(",")
+    if shift_time.strip()
+]
 
 
 def load_clock_data():
@@ -406,6 +414,61 @@ def can_manage_streaks(member):
     return False
 
 
+def get_streak_shift_datetimes():
+    now = datetime.now(TZ)
+    shifts = []
+
+    for shift_time in STREAK_SHIFT_TIMES:
+        for day_offset in [-1, 0, 1]:
+            shift_date = (now + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+
+            try:
+                shift_datetime = datetime.strptime(
+                    f"{shift_date} {shift_time}",
+                    "%Y-%m-%d %H:%M"
+                ).replace(tzinfo=TZ)
+            except ValueError:
+                continue
+
+            shifts.append(shift_datetime)
+
+    shifts = sorted(list(set(shifts)))
+    return shifts
+
+
+def find_independent_streak_clockin_status():
+    now = datetime.now(TZ).replace(second=0, microsecond=0)
+    possible_matches = []
+
+    for shift_datetime in get_streak_shift_datetimes():
+        early_start = shift_datetime - timedelta(minutes=EARLY_STREAK_WINDOW_MINUTES)
+        late_end = shift_datetime + timedelta(minutes=LATE_STREAK_WINDOW_MINUTES)
+
+        if early_start <= now <= shift_datetime:
+            distance = abs((shift_datetime - now).total_seconds())
+            possible_matches.append({
+                "status": "on_time",
+                "shift_datetime": shift_datetime,
+                "distance": distance
+            })
+
+        elif shift_datetime < now <= late_end:
+            distance = abs((now - shift_datetime).total_seconds())
+            possible_matches.append({
+                "status": "late",
+                "shift_datetime": shift_datetime,
+                "distance": distance
+            })
+
+    if not possible_matches:
+        return "outside_window", None
+
+    possible_matches.sort(key=lambda item: item["distance"])
+    best_match = possible_matches[0]
+
+    return best_match["status"], best_match
+
+
 def update_streak_for_clockin(member, channel_name, guild_id=None):
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     now_text = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -419,16 +482,33 @@ def update_streak_for_clockin(member, channel_name, guild_id=None):
     if streak_data.get("first_clockin_date") == today:
         return streak_data.get("streak", 0), "already_counted_today"
 
+    streak_status, shift_info = find_independent_streak_clockin_status()
+
     streak_data["first_clockin_date"] = today
-    streak_data["first_clockin_status"] = "counted"
+    streak_data["first_clockin_status"] = streak_status
     streak_data["first_clockin_channel"] = normalize_name(channel_name)
     streak_data["first_clockin_time"] = now_text
 
-    if streak_data.get("last_counted_date") != today:
-        streak_data["streak"] = streak_data.get("streak", 0) + 1
+    if shift_info is not None:
+        streak_data["first_clockin_shift_time"] = shift_info["shift_datetime"].strftime("%H:%M")
+    else:
+        streak_data["first_clockin_shift_time"] = None
+
+    if streak_status == "on_time":
+        if streak_data.get("last_counted_date") != today:
+            streak_data["streak"] = streak_data.get("streak", 0) + 1
+            streak_data["last_counted_date"] = today
+
+        return streak_data.get("streak", 0), "counted"
+
+    if streak_status == "late":
+        streak_data["streak"] = 0
+        streak_data["last_reset_date"] = today
         streak_data["last_counted_date"] = today
 
-    return streak_data.get("streak", 0), "counted"
+        return streak_data.get("streak", 0), "reset_late"
+
+    return streak_data.get("streak", 0), "outside_window"
 
 
 def get_shift_datetimes_for_channel(channel_name):
@@ -530,6 +610,7 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
     print(f"Loaded {len(schedule_cache)} shifts.")
     print(f"Using data file: {DATA_FILE}")
+    print(f"Streak shift times: {', '.join(STREAK_SHIFT_TIMES)}")
 
     print("Servers bot can see:")
     for guild in bot.guilds:
@@ -577,7 +658,11 @@ async def ci(ctx):
     save_clock_data()
 
     await ctx.message.add_reaction("✅")
-    await ctx.send(f"🔥 Streak {streak}")
+
+    if streak_status == "reset_late":
+        await ctx.send(f"🔥 Streak {streak} - your streak has been reset because of a late clock-in")
+    else:
+        await ctx.send(f"🔥 Streak {streak}")
 
 
 @bot.command(name="co")
@@ -1020,7 +1105,7 @@ async def rules(ctx, *, message: str = None):
 
     batch_id = create_announcement_batch_id()
 
-    rules_text = f"📜 **RULES UPDATE**\n\n{message}"
+    rules_text = message
 
     if len(rules_text) > 2000:
         await ctx.send("❌ Rules message is too long. Discord limit is 2000 characters.")
