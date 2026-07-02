@@ -299,6 +299,18 @@ def get_unique_announcement_channels():
     return channels
 
 
+def get_unique_rules_channels(guild):
+    channels = []
+
+    for channel in guild.text_channels:
+        channel_name = normalize_name(channel.name)
+
+        if "rules" in channel_name and channel_name not in channels:
+            channels.append(channel_name)
+
+    return channels
+
+
 def find_account_by_source_channel(channel_name):
     channel_name = normalize_name(channel_name)
     source_prefix = get_channel_prefix(channel_name)
@@ -984,6 +996,99 @@ async def announcement(ctx, *, message: str = None):
 
     if not reply:
         reply = "❌ Announcement was not sent to any channel."
+
+    await ctx.send(reply)
+
+
+@bot.command(name="rules")
+async def rules(ctx, *, message: str = None):
+    if not message:
+        await ctx.send("Please write the rules message after the command.")
+        return
+
+    guild = get_main_guild(ctx)
+
+    if guild is None:
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        return
+
+    rules_channels = get_unique_rules_channels(guild)
+
+    if not rules_channels:
+        await ctx.send("❌ No rules channels found. Make sure model rules channels have `rules` in the channel name.")
+        return
+
+    batch_id = create_announcement_batch_id()
+
+    rules_text = f"📜 **RULES UPDATE**\n\n{message}"
+
+    if len(rules_text) > 2000:
+        await ctx.send("❌ Rules message is too long. Discord limit is 2000 characters.")
+        return
+
+    sent_channels = []
+    failed_channels = []
+    sent_messages = []
+
+    for channel_name in rules_channels:
+        channel = find_channel_by_name(guild, channel_name)
+
+        if channel is None:
+            failed_channels.append(channel_name)
+            continue
+
+        try:
+            sent_message = await channel.send(rules_text)
+
+            sent_channels.append(channel_name)
+
+            sent_messages.append({
+                "channel_name": channel_name,
+                "channel_id": sent_message.channel.id,
+                "message_id": sent_message.id
+            })
+
+        except Exception as e:
+            print(f"Failed to send rules message to {channel_name}: {e}")
+            failed_channels.append(channel_name)
+
+    if sent_messages:
+        batch = {
+            "batch_id": batch_id,
+            "created_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "created_by": ctx.author.name,
+            "text_preview": message[:150],
+            "messages": sent_messages,
+            "deleted": False,
+            "type": "rules"
+        }
+
+        clock_data["announcement_batches"].append(batch)
+        clock_data["announcement_batches"] = clock_data["announcement_batches"][-50:]
+
+        save_clock_data()
+
+    reply = ""
+
+    if sent_channels:
+        reply += f"✅ Rules message sent to **{len(sent_channels)}** rules channels.\n\n"
+        reply += f"**Batch ID:** `{batch_id}`\n\n"
+        reply += "To delete this rules message:\n"
+        reply += f"`!deleteannouncement {batch_id}`\n"
+        reply += "or\n"
+        reply += "`!deleteannouncement latest`\n\n"
+        reply += "**Sent to:**\n"
+        reply += "\n".join([f"- #{name}" for name in sent_channels])
+
+    if failed_channels:
+        if reply:
+            reply += "\n\n"
+
+        reply += "❌ Failed / not found:\n"
+        reply += "\n".join([f"- #{name}" for name in failed_channels])
+
+    if not reply:
+        reply = "❌ Rules message was not sent to any channel."
 
     await ctx.send(reply)
 
