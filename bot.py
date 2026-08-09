@@ -319,6 +319,18 @@ def get_unique_rules_channels(guild):
     return channels
 
 
+def get_unique_training_channels(guild):
+    channels = []
+
+    for channel in guild.text_channels:
+        channel_name = normalize_name(channel.name)
+
+        if "training" in channel_name and channel_name not in channels:
+            channels.append(channel_name)
+
+    return channels
+
+
 def find_account_by_source_channel(channel_name):
     channel_name = normalize_name(channel_name)
     source_prefix = get_channel_prefix(channel_name)
@@ -366,6 +378,7 @@ def get_or_create_streak_data(member):
         "first_clockin_status": None,
         "first_clockin_channel": None,
         "first_clockin_time": None,
+        "first_clockin_shift_time": None,
         "last_clockin_date": None,
         "last_clockin_channel": None,
         "last_clockin_guild_id": None,
@@ -412,6 +425,10 @@ def can_manage_streaks(member):
             return True
 
     return False
+
+
+def can_manage_broadcasts(member):
+    return can_manage_streaks(member)
 
 
 def get_streak_shift_datetimes():
@@ -598,6 +615,73 @@ def get_latest_active_announcement_batch():
     return None
 
 
+def get_latest_active_batch_by_type(batch_type):
+    batches = clock_data.get("announcement_batches", [])
+
+    for batch in reversed(batches):
+        if not batch.get("deleted", False) and batch.get("type") == batch_type:
+            return batch
+
+    return None
+
+
+async def delete_saved_batch_messages(ctx, batch, label="announcement"):
+    guild = get_main_guild(ctx)
+
+    if guild is None:
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        return
+
+    deleted_count = 0
+    already_deleted_count = 0
+    failed_messages = []
+
+    for message_info in batch.get("messages", []):
+        channel_id = message_info.get("channel_id")
+        message_id = message_info.get("message_id")
+        channel_name = message_info.get("channel_name", "unknown-channel")
+
+        channel = bot.get_channel(int(channel_id)) if channel_id else None
+
+        if channel is None:
+            channel = find_channel_by_name(guild, channel_name)
+
+        if channel is None:
+            failed_messages.append(f"#{channel_name} — channel not found")
+            continue
+
+        try:
+            discord_message = await channel.fetch_message(int(message_id))
+            await discord_message.delete()
+            deleted_count += 1
+
+        except discord.NotFound:
+            already_deleted_count += 1
+
+        except discord.Forbidden:
+            failed_messages.append(f"#{channel_name} — no permission to delete")
+
+        except Exception as e:
+            print(f"Failed to delete {label} from {channel_name}: {e}")
+            failed_messages.append(f"#{channel_name} — delete failed")
+
+    batch["deleted"] = True
+    batch["deleted_at"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    batch["deleted_by"] = ctx.author.name
+    save_clock_data()
+
+    reply = ""
+    reply += f"🗑️ Delete finished for {label} batch `{batch.get('batch_id')}`.\n\n"
+    reply += f"Deleted: **{deleted_count}** messages\n"
+    reply += f"Already deleted / not found: **{already_deleted_count}** messages\n"
+
+    if failed_messages:
+        reply += "\n❌ Failed:\n"
+        reply += "\n".join(failed_messages)
+
+    await ctx.send(reply)
+
+
 @bot.event
 async def on_ready():
     global schedule_cache
@@ -756,7 +840,8 @@ async def status(ctx):
         await ctx.send("Nobody is currently clocked in on this server.")
         return
 
-    await ctx.send(msg)
+    for chunk in sendable_chunks(msg):
+        await ctx.send(chunk)
 
 
 @bot.command(name="allstatus")
@@ -987,7 +1072,7 @@ async def contentrequest(ctx, *, request_text: str = None):
             print(f"Failed to add content request reaction {emoji}: {e}")
 
     await ctx.message.add_reaction("✅")
-    await ctx.send(f"✅ Content request sent for **{model_name}**")
+    await ctx.send(f"✅ Content request sent for **{model_name}")
 
 
 @bot.command()
@@ -1052,7 +1137,8 @@ async def announcement(ctx, *, message: str = None):
             "created_by": ctx.author.name,
             "text_preview": message[:150],
             "messages": sent_messages,
-            "deleted": False
+            "deleted": False,
+            "type": "announcement"
         }
 
         clock_data["announcement_batches"].append(batch)
@@ -1178,6 +1264,170 @@ async def rules(ctx, *, message: str = None):
     await ctx.send(reply)
 
 
+@bot.command(name="training", aliases=["trainings", "trainingmaterial", "tm"])
+async def training(ctx, *, message: str = None):
+    if not can_manage_broadcasts(ctx.author):
+        await ctx.send("❌ You don't have permission to send training material to all channels.")
+        return
+
+    guild = get_main_guild(ctx)
+
+    if guild is None:
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        return
+
+    training_channels = get_unique_training_channels(guild)
+
+    if not training_channels:
+        await ctx.send("❌ No training channels found. Make sure training channels have `training` in the channel name.")
+        return
+
+    referenced_message = None
+
+    if ctx.message.reference and ctx.message.reference.message_id:
+        try:
+            reference_channel = ctx.channel
+
+            if ctx.message.reference.channel_id:
+                found_channel = bot.get_channel(ctx.message.reference.channel_id)
+                if found_channel is not None:
+                    reference_channel = found_channel
+
+            referenced_message = await reference_channel.fetch_message(ctx.message.reference.message_id)
+        except Exception as e:
+            print(f"Failed to fetch referenced training message: {e}")
+            referenced_message = None
+
+    source_attachments = ctx.message.attachments
+    training_text = message or ""
+
+    if referenced_message is not None:
+        if not source_attachments and referenced_message.attachments:
+            source_attachments = referenced_message.attachments
+
+        if not training_text and referenced_message.content:
+            training_text = referenced_message.content
+
+    if not training_text and not source_attachments:
+        await ctx.send(
+            "Use it like this:\n"
+            "`!training message`\n"
+            "or upload a photo/video with `!training`\n"
+            "or reply to a training message/photo/video with `!training`."
+        )
+        return
+
+    if len(training_text) > 2000:
+        await ctx.send("❌ Training message is too long. Discord limit is 2000 characters.")
+        return
+
+    batch_id = create_announcement_batch_id()
+
+    sent_channels = []
+    failed_channels = []
+    sent_messages = []
+
+    for channel_name in training_channels:
+        channel = find_channel_by_name(guild, channel_name)
+
+        if channel is None:
+            failed_channels.append(channel_name)
+            continue
+
+        try:
+            files = []
+
+            for attachment in source_attachments:
+                files.append(await attachment.to_file())
+
+            if files:
+                sent_message = await channel.send(
+                    content=training_text if training_text else None,
+                    files=files
+                )
+            else:
+                sent_message = await channel.send(training_text)
+
+            for emoji in ["👀", "✅", "❌"]:
+                try:
+                    await sent_message.add_reaction(emoji)
+                except Exception as e:
+                    print(f"Failed to add training reaction {emoji}: {e}")
+
+            sent_channels.append(channel_name)
+
+            sent_messages.append({
+                "channel_name": channel_name,
+                "channel_id": sent_message.channel.id,
+                "message_id": sent_message.id
+            })
+
+        except Exception as e:
+            print(f"Failed to send training material to {channel_name}: {e}")
+            failed_channels.append(channel_name)
+
+    if sent_messages:
+        batch = {
+            "batch_id": batch_id,
+            "created_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "created_by": ctx.author.name,
+            "text_preview": training_text[:150] if training_text else "Training attachment",
+            "messages": sent_messages,
+            "deleted": False,
+            "type": "training"
+        }
+
+        clock_data["announcement_batches"].append(batch)
+        clock_data["announcement_batches"] = clock_data["announcement_batches"][-50:]
+
+        save_clock_data()
+
+    reply = ""
+
+    if sent_channels:
+        reply += f"✅ Training material sent to **{len(sent_channels)}** training channels.\n\n"
+        reply += f"**Batch ID:** `{batch_id}`\n\n"
+        reply += "To delete this training material:\n"
+        reply += f"`!deletetraining {batch_id}`\n"
+        reply += "or\n"
+        reply += "`!deletetraining latest`\n\n"
+        reply += "**Sent to:**\n"
+        reply += "\n".join([f"- #{name}" for name in sent_channels])
+
+    if failed_channels:
+        if reply:
+            reply += "\n\n"
+
+        reply += "❌ Failed / not found:\n"
+        reply += "\n".join([f"- #{name}" for name in failed_channels])
+
+    if not reply:
+        reply = "❌ Training material was not sent to any channel."
+
+    await ctx.send(reply)
+
+
+@bot.command(name="trainingchannels")
+async def trainingchannels(ctx):
+    guild = get_main_guild(ctx)
+
+    if guild is None:
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        return
+
+    channels = get_unique_training_channels(guild)
+
+    if not channels:
+        await ctx.send("No training channels found.")
+        return
+
+    msg = "**Training channels found:**\n"
+    msg += "\n".join([f"- #{channel}" for channel in channels])
+
+    for chunk in sendable_chunks(msg):
+        await ctx.send(chunk)
+
+
 @bot.command()
 async def announcements(ctx):
     batches = clock_data.get("announcement_batches", [])
@@ -1194,7 +1444,7 @@ async def announcements(ctx):
     last_batches = active_batches[-10:]
     last_batches.reverse()
 
-    msg = "**Recent active announcements:**\n\n"
+    msg = "**Recent active announcements / rules / training:**\n\n"
 
     for batch in last_batches:
         batch_id = batch.get("batch_id", "unknown")
@@ -1202,14 +1452,20 @@ async def announcements(ctx):
         created_by = batch.get("created_by", "unknown")
         text_preview = batch.get("text_preview", "")
         channel_count = len(batch.get("messages", []))
+        batch_type = batch.get("type", "announcement")
 
-        msg += f"**{batch_id}**\n"
+        msg += f"**{batch_id}** — `{batch_type}`\n"
         msg += f"Created: `{created_at}` by **{created_by}**\n"
         msg += f"Channels: **{channel_count}**\n"
         msg += f"Preview: {text_preview}\n"
-        msg += f"Delete: `!deleteannouncement {batch_id}`\n\n"
 
-    await ctx.send(msg)
+        if batch_type == "training":
+            msg += f"Delete: `!deletetraining {batch_id}`\n\n"
+        else:
+            msg += f"Delete: `!deleteannouncement {batch_id}`\n\n"
+
+    for chunk in sendable_chunks(msg):
+        await ctx.send(chunk)
 
 
 @bot.command()
@@ -1247,55 +1503,49 @@ async def deleteannouncement(ctx, batch_id: str = None):
         await ctx.send("This announcement batch was already marked as deleted.")
         return
 
-    deleted_count = 0
-    already_deleted_count = 0
-    failed_messages = []
+    await delete_saved_batch_messages(ctx, batch, "announcement")
 
-    for message_info in batch.get("messages", []):
-        channel_id = message_info.get("channel_id")
-        message_id = message_info.get("message_id")
-        channel_name = message_info.get("channel_name", "unknown-channel")
 
-        channel = bot.get_channel(int(channel_id)) if channel_id else None
+@bot.command(name="deletetraining")
+async def deletetraining(ctx, batch_id: str = None):
+    if not can_manage_broadcasts(ctx.author):
+        await ctx.send("❌ You don't have permission to delete training material.")
+        return
 
-        if channel is None:
-            channel = find_channel_by_name(guild, channel_name)
+    if not batch_id:
+        await ctx.send(
+            "Please write which training material to delete.\n\n"
+            "Examples:\n"
+            "`!deletetraining latest`\n"
+            "`!deletetraining 20260620-123456`"
+        )
+        return
 
-        if channel is None:
-            failed_messages.append(f"#{channel_name} — channel not found")
-            continue
+    guild = get_main_guild(ctx)
 
-        try:
-            discord_message = await channel.fetch_message(int(message_id))
-            await discord_message.delete()
-            deleted_count += 1
+    if guild is None:
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        return
 
-        except discord.NotFound:
-            already_deleted_count += 1
+    batch = None
 
-        except discord.Forbidden:
-            failed_messages.append(f"#{channel_name} — no permission to delete")
+    if batch_id.lower() == "latest":
+        batch = get_latest_active_batch_by_type("training")
+    else:
+        for saved_batch in clock_data.get("announcement_batches", []):
+            if saved_batch.get("batch_id") == batch_id and saved_batch.get("type") == "training":
+                batch = saved_batch
+                break
 
-        except Exception as e:
-            print(f"Failed to delete announcement from {channel_name}: {e}")
-            failed_messages.append(f"#{channel_name} — delete failed")
+    if batch is None:
+        await ctx.send("❌ Training batch not found.")
+        return
 
-    batch["deleted"] = True
-    batch["deleted_at"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-    batch["deleted_by"] = ctx.author.name
-    save_clock_data()
+    if batch.get("deleted", False):
+        await ctx.send("This training batch was already marked as deleted.")
+        return
 
-    reply = ""
-
-    reply += f"🗑️ Delete finished for batch `{batch.get('batch_id')}`.\n\n"
-    reply += f"Deleted: **{deleted_count}** messages\n"
-    reply += f"Already deleted / not found: **{already_deleted_count}** messages\n"
-
-    if failed_messages:
-        reply += "\n❌ Failed:\n"
-        reply += "\n".join(failed_messages)
-
-    await ctx.send(reply)
+    await delete_saved_batch_messages(ctx, batch, "training")
 
 
 @bot.command()
@@ -1309,7 +1559,8 @@ async def announcementchannels(ctx):
     msg = "**Announcement channels from sheet:**\n"
     msg += "\n".join([f"- #{channel}" for channel in channels])
 
-    await ctx.send(msg)
+    for chunk in sendable_chunks(msg):
+        await ctx.send(chunk)
 
 
 @bot.command()
