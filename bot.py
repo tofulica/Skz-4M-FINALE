@@ -16,7 +16,6 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 GUILD_ID_RAW = os.getenv("GUILD_ID")
-
 try:
     GUILD_ID = int(GUILD_ID_RAW) if GUILD_ID_RAW else None
 except ValueError:
@@ -46,12 +45,17 @@ DATA_DIR = (
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-DATA_FILE = os.path.join(DATA_DIR, "clock_data.json")
+DATA_FILE = os.path.join(
+    DATA_DIR,
+    "clock_data.json"
+)
 
 EARLY_STREAK_WINDOW_MINUTES = 180
 LATE_STREAK_WINDOW_MINUTES = 180
+
 NO_CLOCKIN_ALERT_AFTER_MINUTES = 5
 NO_CLOCKIN_ALERT_WINDOW_MINUTES = 10
+
 ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES = 15
 
 STREAK_SHIFT_TIMES_RAW = (
@@ -102,7 +106,9 @@ def load_clock_data():
         data["clocked_in_channels"].items()
     ):
         if isinstance(value, dict):
-            data["clocked_in_channels"][channel_name] = [value]
+            data["clocked_in_channels"][channel_name] = [
+                value
+            ]
 
     return data
 
@@ -117,7 +123,10 @@ def save_clock_data():
 
 
 def load_schedule_from_csv():
-    response = requests.get(SHEET_CSV_URL)
+    response = requests.get(
+        SHEET_CSV_URL
+    )
+
     response.raise_for_status()
 
     csv_text = response.text
@@ -145,28 +154,31 @@ def load_schedule_from_csv():
             )
 
         schedule.append({
-            "account": row["account"].strip(),
+            "account": row[
+                "account"
+            ].strip(),
 
-            "channel_name": (
-                row["channel_name"]
-                .strip()
-                .lower()
-            ),
+            "channel_name": row[
+                "channel_name"
+            ].strip().lower(),
 
-            "shift_time": (
-                row["shift_time"]
-                .strip()
-            ),
+            "shift_time": row[
+                "shift_time"
+            ].strip(),
 
             "scheduled_chatter_username": (
-                row["scheduled_chatter_username"]
+                row[
+                    "scheduled_chatter_username"
+                ]
                 .strip()
                 .lower()
                 .replace("@", "")
             ),
 
             "supervisor_role_name": (
-                row["supervisor_role_name"]
+                row[
+                    "supervisor_role_name"
+                ]
                 .strip()
                 .replace("@", "")
             ),
@@ -180,6 +192,7 @@ def load_schedule_from_csv():
 
 
 clock_data = load_clock_data()
+
 schedule_cache = []
 
 intents = discord.Intents.default()
@@ -203,7 +216,9 @@ async def on_message(message):
         f"{message.content}"
     )
 
-    await bot.process_commands(message)
+    await bot.process_commands(
+        message
+    )
 
 
 def get_main_guild(ctx=None):
@@ -211,7 +226,9 @@ def get_main_guild(ctx=None):
         return ctx.guild
 
     if GUILD_ID:
-        guild = bot.get_guild(GUILD_ID)
+        guild = bot.get_guild(
+            GUILD_ID
+        )
 
         if guild is not None:
             return guild
@@ -227,7 +244,8 @@ def normalize_name(value):
         return ""
 
     return (
-        value.lower()
+        value
+        .lower()
         .replace("@", "")
         .replace("#", "")
         .strip()
@@ -298,20 +316,26 @@ def get_channel_storage_key_for_checkout(
         channel_name
     )
 
-    channel_key = get_channel_key_from_parts(
-        guild_id,
-        channel_name
+    channel_key = (
+        get_channel_key_from_parts(
+            guild_id,
+            channel_name
+        )
     )
 
     if (
         channel_key
-        in clock_data["clocked_in_channels"]
+        in clock_data[
+            "clocked_in_channels"
+        ]
     ):
         return channel_key
 
     if (
         channel_name
-        in clock_data["clocked_in_channels"]
+        in clock_data[
+            "clocked_in_channels"
+        ]
     ):
         return channel_name
 
@@ -326,14 +350,18 @@ def get_clockins_for_guild_channel(
         channel_name
     )
 
-    channel_key = get_channel_key_from_parts(
-        guild_id,
-        channel_name
+    channel_key = (
+        get_channel_key_from_parts(
+            guild_id,
+            channel_name
+        )
     )
 
     if (
         channel_key
-        in clock_data["clocked_in_channels"]
+        in clock_data[
+            "clocked_in_channels"
+        ]
     ):
         return clock_data[
             "clocked_in_channels"
@@ -354,9 +382,11 @@ def is_channel_clocked_in(
     guild_id,
     channel_name
 ):
-    clockins = get_clockins_for_guild_channel(
-        guild_id,
-        channel_name
+    clockins = (
+        get_clockins_for_guild_channel(
+            guild_id,
+            channel_name
+        )
     )
 
     return len(clockins) > 0
@@ -365,7 +395,10 @@ def is_channel_clocked_in(
 def parse_clockin_time(clockin):
     try:
         return datetime.strptime(
-            clockin.get("time", ""),
+            clockin.get(
+                "time",
+                ""
+            ),
             "%Y-%m-%d %H:%M:%S"
         ).replace(
             tzinfo=TZ
@@ -383,9 +416,15 @@ def sendable_chunks(
     current = ""
 
     for line in text.splitlines(True):
-        if len(current) + len(line) > limit:
+        if (
+            len(current)
+            + len(line)
+            > limit
+        ):
             if current:
-                chunks.append(current)
+                chunks.append(
+                    current
+                )
 
             current = line
 
@@ -393,7 +432,9 @@ def sendable_chunks(
             current += line
 
     if current:
-        chunks.append(current)
+        chunks.append(
+            current
+        )
 
     return chunks
 
@@ -402,11 +443,17 @@ def member_matches_username(
     member,
     username
 ):
-    username = normalize_name(username)
+    username = normalize_name(
+        username
+    )
 
     possible_names = [
-        normalize_name(member.name),
-        normalize_name(member.display_name)
+        normalize_name(
+            member.name
+        ),
+        normalize_name(
+            member.display_name
+        )
     ]
 
     if member.global_name:
@@ -473,7 +520,9 @@ def find_channel_by_name(
 
     for channel in guild.text_channels:
         if (
-            normalize_name(channel.name)
+            normalize_name(
+                channel.name
+            )
             == channel_name
         ):
             return channel
@@ -491,7 +540,9 @@ def find_role_by_name(
 
     for role in guild.roles:
         if (
-            normalize_name(role.name)
+            normalize_name(
+                role.name
+            )
             == role_name
         ):
             return role
@@ -504,7 +555,8 @@ def get_unique_announcement_channels():
 
     for shift in schedule_cache:
         channel_name = (
-            shift.get(
+            shift
+            .get(
                 "announcement_channel_name",
                 ""
             )
@@ -514,14 +566,19 @@ def get_unique_announcement_channels():
 
         if (
             channel_name
-            and channel_name not in channels
+            and channel_name
+            not in channels
         ):
-            channels.append(channel_name)
+            channels.append(
+                channel_name
+            )
 
     return channels
 
 
-def get_unique_rules_channels(guild):
+def get_unique_rules_channels(
+    guild
+):
     channels = []
 
     for channel in guild.text_channels:
@@ -531,7 +588,8 @@ def get_unique_rules_channels(guild):
 
         if (
             "rules" in channel_name
-            and channel_name not in channels
+            and channel_name
+            not in channels
         ):
             channels.append(
                 channel_name
@@ -540,7 +598,9 @@ def get_unique_rules_channels(guild):
     return channels
 
 
-def get_unique_training_channels(guild):
+def get_unique_training_channels(
+    guild
+):
     channels = []
 
     for channel in guild.text_channels:
@@ -549,8 +609,10 @@ def get_unique_training_channels(guild):
         )
 
         if (
-            "training" in channel_name
-            and channel_name not in channels
+            "training"
+            in channel_name
+            and channel_name
+            not in channels
         ):
             channels.append(
                 channel_name
@@ -573,7 +635,9 @@ def find_account_by_source_channel(
     for shift in schedule_cache:
         possible_channels = [
             normalize_name(
-                shift.get("channel_name")
+                shift.get(
+                    "channel_name"
+                )
             ),
             normalize_name(
                 shift.get(
@@ -582,7 +646,10 @@ def find_account_by_source_channel(
             )
         ]
 
-        if channel_name in possible_channels:
+        if (
+            channel_name
+            in possible_channels
+        ):
             return shift.get(
                 "account",
                 "Unknown Model"
@@ -591,7 +658,9 @@ def find_account_by_source_channel(
     for shift in schedule_cache:
         possible_channels = [
             normalize_name(
-                shift.get("channel_name")
+                shift.get(
+                    "channel_name"
+                )
             ),
             normalize_name(
                 shift.get(
@@ -605,7 +674,8 @@ def find_account_by_source_channel(
                 possible_channel
                 and get_channel_prefix(
                     possible_channel
-                ) == source_prefix
+                )
+                == source_prefix
             ):
                 return shift.get(
                     "account",
@@ -615,14 +685,23 @@ def find_account_by_source_channel(
     return "Unknown Model"
 
 
-def get_or_create_streak_data(member):
-    user_id = str(member.id)
+def get_or_create_streak_data(
+    member
+):
+    user_id = str(
+        member.id
+    )
 
     if "streaks" not in clock_data:
         clock_data["streaks"] = {}
 
-    if user_id not in clock_data["streaks"]:
-        clock_data["streaks"][user_id] = {}
+    if (
+        user_id
+        not in clock_data["streaks"]
+    ):
+        clock_data[
+            "streaks"
+        ][user_id] = {}
 
     streak_data = clock_data[
         "streaks"
@@ -651,7 +730,10 @@ def get_or_create_streak_data(member):
         if key not in streak_data:
             streak_data[key] = value
 
-    streak_data["username"] = member.name
+    streak_data[
+        "username"
+    ] = member.name
+
     streak_data[
         "display_name"
     ] = member.display_name
@@ -695,7 +777,9 @@ def can_manage_streaks(member):
 
     for role in member.roles:
         if (
-            normalize_name(role.name)
+            normalize_name(
+                role.name
+            )
             in allowed_roles
         ):
             return True
@@ -704,7 +788,9 @@ def can_manage_streaks(member):
 
 
 def can_manage_broadcasts(member):
-    return can_manage_streaks(member)
+    return can_manage_streaks(
+        member
+    )
 
 
 def get_streak_shift_datetimes():
@@ -742,7 +828,9 @@ def get_streak_shift_datetimes():
             )
 
     shifts = sorted(
-        list(set(shifts))
+        list(
+            set(shifts)
+        )
     )
 
     return shifts
@@ -764,14 +852,18 @@ def find_independent_streak_clockin_status():
         early_start = (
             shift_datetime
             - timedelta(
-                minutes=EARLY_STREAK_WINDOW_MINUTES
+                minutes=(
+                    EARLY_STREAK_WINDOW_MINUTES
+                )
             )
         )
 
         late_end = (
             shift_datetime
             + timedelta(
-                minutes=LATE_STREAK_WINDOW_MINUTES
+                minutes=(
+                    LATE_STREAK_WINDOW_MINUTES
+                )
             )
         )
 
@@ -789,7 +881,9 @@ def find_independent_streak_clockin_status():
 
             possible_matches.append({
                 "status": "on_time",
-                "shift_datetime": shift_datetime,
+                "shift_datetime": (
+                    shift_datetime
+                ),
                 "distance": distance
             })
 
@@ -807,7 +901,9 @@ def find_independent_streak_clockin_status():
 
             possible_matches.append({
                 "status": "late",
-                "shift_datetime": shift_datetime,
+                "shift_datetime": (
+                    shift_datetime
+                ),
                 "distance": distance
             })
 
@@ -818,10 +914,14 @@ def find_independent_streak_clockin_status():
         )
 
     possible_matches.sort(
-        key=lambda item: item["distance"]
+        key=lambda item: item[
+            "distance"
+        ]
     )
 
-    best_match = possible_matches[0]
+    best_match = (
+        possible_matches[0]
+    )
 
     return (
         best_match["status"],
@@ -952,7 +1052,10 @@ def update_streak_for_clockin(
         )
 
     if streak_status == "late":
-        streak_data["streak"] = 0
+        streak_data[
+            "streak"
+        ] = 0
+
         streak_data[
             "last_reset_date"
         ] = today
@@ -986,13 +1089,17 @@ def get_shift_datetimes_for_channel(
     )
 
     now = datetime.now(TZ)
+
     shifts = []
 
     for shift in schedule_cache:
         if (
             normalize_name(
-                shift.get("channel_name")
-            ) != channel_name
+                shift.get(
+                    "channel_name"
+                )
+            )
+            != channel_name
         ):
             continue
 
@@ -1025,7 +1132,9 @@ def get_shift_datetimes_for_channel(
             )
 
     shifts = sorted(
-        list(set(shifts))
+        list(
+            set(shifts)
+        )
     )
 
     return shifts
@@ -1044,18 +1153,23 @@ def get_allstatus_target_shift(
         return None
 
     now = datetime.now(TZ)
+
     target_shift = None
 
     for shift_datetime in shifts:
         switch_time = (
             shift_datetime
             - timedelta(
-                minutes=ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES
+                minutes=(
+                    ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES
+                )
             )
         )
 
         if now >= switch_time:
-            target_shift = shift_datetime
+            target_shift = (
+                shift_datetime
+            )
 
     if target_shift is not None:
         return target_shift
@@ -1093,7 +1207,9 @@ def get_allstatus_valid_clockins(
     cutoff_time = (
         target_shift
         - timedelta(
-            minutes=EARLY_STREAK_WINDOW_MINUTES
+            minutes=(
+                EARLY_STREAK_WINDOW_MINUTES
+            )
         )
     )
 
@@ -1158,7 +1274,9 @@ def get_latest_active_batch_by_type(
                 "deleted",
                 False
             )
-            and batch.get("type")
+            and batch.get(
+                "type"
+            )
             == batch_type
         ):
             return batch
@@ -1325,7 +1443,9 @@ def get_mma_request(request_id):
     )
 
 
-def build_mma_embed(request_data):
+def build_mma_embed(
+    request_data
+):
     status = request_data.get(
         "status",
         "pending"
@@ -1343,69 +1463,41 @@ def build_mma_embed(request_data):
         color = discord.Color.orange()
         status_text = "⏳ PENDING APPROVAL"
 
-    mass_message = (
-        request_data
-        .get(
-            "mass_message",
-            ""
-        )
-        .strip()
-    )
-
-    model_name = (
-        request_data.get(
-            "model_name"
-        )
-        or "Unknown Model"
-    )
-
-    source_channel_id = (
-        request_data.get(
-            "source_channel_id"
-        )
-    )
-
-    source_channel_name = (
-        request_data.get(
-            "source_channel_name"
-        )
-        or "unknown-channel"
-    )
-
-    description = (
-        "### 📝 Mass Message & Follow Ups\n"
-        f"{mass_message}"
+    mass_message = request_data.get(
+        "mass_message",
+        ""
     )
 
     embed = discord.Embed(
         title="📨 Mass Message Approval",
-        description=description,
+        description=mass_message,
         color=color,
         timestamp=datetime.now(TZ)
     )
 
-    if source_channel_id:
-        model_channel_value = (
-            f"**{model_name}**\n"
-            f"<#{source_channel_id}>"
-        )
-
-    else:
-        model_channel_value = (
-            f"**{model_name}**\n"
-            f"#{source_channel_name}"
-        )
-
-    embed.add_field(
-        name="Model / Channel",
-        value=model_channel_value,
-        inline=True
+    model_name = request_data.get(
+        "model_name"
     )
+
+    if model_name:
+        embed.add_field(
+            name="Model",
+            value=model_name,
+            inline=True
+        )
 
     embed.add_field(
         name="Submitted by",
         value=(
             f"<@{request_data.get('requester_id')}>"
+        ),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Source",
+        value=(
+            f"<#{request_data.get('source_channel_id')}>"
         ),
         inline=True
     )
@@ -1453,22 +1545,20 @@ def build_mma_embed(request_data):
         "approved",
         "declined"
     ]:
-        decided_by = (
-            request_data.get(
-                "decided_by"
-            )
+        decided_by = request_data.get(
+            "decided_by"
         )
 
-        decided_at = (
-            request_data.get(
-                "decided_at"
-            )
+        decided_at = request_data.get(
+            "decided_at"
         )
 
         if decided_by:
             embed.add_field(
                 name="Reviewed by",
-                value=f"<@{decided_by}>",
+                value=(
+                    f"<@{decided_by}>"
+                ),
                 inline=True
             )
 
@@ -1558,10 +1648,14 @@ async def handle_mma_decision(
         return
 
     if decision == "approved":
-        request_data["status"] = "approved"
+        request_data[
+            "status"
+        ] = "approved"
 
     else:
-        request_data["status"] = "declined"
+        request_data[
+            "status"
+        ] = "declined"
 
     request_data[
         "decided_by"
@@ -1614,10 +1708,8 @@ async def handle_mma_decision(
         )
         return
 
-    requester_id = (
-        request_data.get(
-            "requester_id"
-        )
+    requester_id = request_data.get(
+        "requester_id"
     )
 
     if decision == "approved":
@@ -1657,26 +1749,34 @@ class MMAApprovalView(
 
         self.request_id = request_id
 
-        approve_button = discord.ui.Button(
-            label="Approve",
-            emoji="✅",
-            style=discord.ButtonStyle.success,
-            custom_id=(
-                f"mma_approve_"
-                f"{request_id}"
-            ),
-            disabled=disabled
+        approve_button = (
+            discord.ui.Button(
+                label="Approve",
+                emoji="✅",
+                style=(
+                    discord.ButtonStyle.success
+                ),
+                custom_id=(
+                    f"mma_approve_"
+                    f"{request_id}"
+                ),
+                disabled=disabled
+            )
         )
 
-        decline_button = discord.ui.Button(
-            label="Decline",
-            emoji="❌",
-            style=discord.ButtonStyle.danger,
-            custom_id=(
-                f"mma_decline_"
-                f"{request_id}"
-            ),
-            disabled=disabled
+        decline_button = (
+            discord.ui.Button(
+                label="Decline",
+                emoji="❌",
+                style=(
+                    discord.ButtonStyle.danger
+                ),
+                custom_id=(
+                    f"mma_decline_"
+                    f"{request_id}"
+                ),
+                disabled=disabled
+            )
         )
 
         approve_button.callback = (
@@ -1743,7 +1843,9 @@ async def on_ready():
         ).items():
 
             if (
-                request_data.get("status")
+                request_data.get(
+                    "status"
+                )
                 == "pending"
             ):
                 bot.add_view(
@@ -1856,16 +1958,12 @@ async def ci(ctx):
         "clocked_in_channels"
     ][channel_key]:
 
-        old_user_id = (
-            clockin.get(
-                "user_id"
-            )
+        old_user_id = clockin.get(
+            "user_id"
         )
 
-        old_username = (
-            clockin.get(
-                "username"
-            )
+        old_username = clockin.get(
+            "username"
         )
 
         if (
@@ -1981,16 +2079,12 @@ async def co(ctx):
         "clocked_in_channels"
     ][channel_key]:
 
-        old_user_id = (
-            clockin.get(
-                "user_id"
-            )
+        old_user_id = clockin.get(
+            "user_id"
         )
 
-        old_username = (
-            clockin.get(
-                "username"
-            )
+        old_username = clockin.get(
+            "username"
         )
 
         if (
@@ -2127,11 +2221,9 @@ async def status(ctx):
                 )
             )
 
-            time = (
-                clockin.get(
-                    "time",
-                    "unknown time"
-                )
+            time = clockin.get(
+                "time",
+                "unknown time"
             )
 
             msg += (
@@ -2175,6 +2267,7 @@ async def allstatus(ctx):
         return
 
     guild_id = guild.id
+
     unique_channels = []
     seen_channels = set()
 
@@ -2187,7 +2280,8 @@ async def allstatus(ctx):
 
         if (
             not channel_name
-            or channel_name in seen_channels
+            or channel_name
+            in seen_channels
         ):
             continue
 
@@ -2200,7 +2294,9 @@ async def allstatus(ctx):
                 "account",
                 "Unknown Model"
             ),
-            "channel_name": channel_name
+            "channel_name": (
+                channel_name
+            )
         })
 
     now_text = datetime.now(
@@ -2221,7 +2317,10 @@ async def allstatus(ctx):
     )
 
     for item in unique_channels:
-        account = item["account"]
+        account = item[
+            "account"
+        ]
+
         channel_name = item[
             "channel_name"
         ]
@@ -2308,7 +2407,10 @@ async def reloadschedule(ctx):
         load_schedule_from_csv()
     )
 
-    clock_data["reminded"] = {}
+    clock_data[
+        "reminded"
+    ] = {}
+
     clock_data[
         "no_clockin_alerts"
     ] = {}
@@ -2316,8 +2418,8 @@ async def reloadschedule(ctx):
     save_clock_data()
 
     await ctx.send(
-        f"✅ Schedule reloaded and "
-        f"reminders reset. "
+        f"✅ Schedule reloaded "
+        f"and reminders reset. "
         f"Shifts loaded: "
         f"**{len(schedule_cache)}**"
     )
@@ -2380,11 +2482,9 @@ async def setstreak(
         )
         return
 
-    member = (
-        find_member_by_identifier(
-            guild,
-            user_identifier
-        )
+    member = find_member_by_identifier(
+        guild,
+        user_identifier
     )
 
     if member is None:
@@ -2414,11 +2514,9 @@ async def setstreak(
         )
     )
 
-    old_streak = (
-        streak_data.get(
-            "streak",
-            0
-        )
+    old_streak = streak_data.get(
+        "streak",
+        0
     )
 
     last_clockin_channel_name = (
@@ -2680,6 +2778,10 @@ async def contentrequest(
     )
 
 
+# =========================
+# MMA COMMAND
+# =========================
+
 @bot.command(name="mma")
 async def mma(
     ctx,
@@ -2747,7 +2849,8 @@ async def mma(
 
     attachments = [
         attachment.url
-        for attachment in ctx.message.attachments
+        for attachment
+        in ctx.message.attachments
     ]
 
     model_name = (
@@ -2780,11 +2883,10 @@ async def mma(
         "mass_message": mass_message,
         "attachments": attachments,
         "status": "pending",
-        "submitted_at": (
-            datetime.now(TZ)
-            .strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
+        "submitted_at": datetime.now(
+            TZ
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S"
         ),
         "approval_channel_id": str(
             approval_channel.id
@@ -2947,7 +3049,9 @@ async def announcement(
             )
 
             sent_messages.append({
-                "channel_name": channel_name,
+                "channel_name": (
+                    channel_name
+                ),
                 "channel_id": (
                     sent_message.channel.id
                 ),
@@ -2970,16 +3074,17 @@ async def announcement(
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": (
-                datetime.now(TZ)
-                .strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+            "created_at": datetime.now(
+                TZ
+            ).strftime(
+                "%Y-%m-%d %H:%M:%S"
             ),
             "created_by": (
                 ctx.author.name
             ),
-            "text_preview": message[:150],
+            "text_preview": (
+                message[:150]
+            ),
             "messages": sent_messages,
             "deleted": False,
             "type": "announcement"
@@ -2987,7 +3092,9 @@ async def announcement(
 
         clock_data[
             "announcement_batches"
-        ].append(batch)
+        ].append(
+            batch
+        )
 
         clock_data[
             "announcement_batches"
@@ -3023,6 +3130,7 @@ async def announcement(
         )
 
         reply += "or\n"
+
         reply += (
             "`!deleteannouncement latest`"
             "\n\n"
@@ -3033,7 +3141,8 @@ async def announcement(
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in sent_channels
+                for name
+                in sent_channels
             ]
         )
 
@@ -3048,7 +3157,8 @@ async def announcement(
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in failed_channels
+                for name
+                in failed_channels
             ]
         )
 
@@ -3058,7 +3168,9 @@ async def announcement(
             "sent to any channel."
         )
 
-    await ctx.send(reply)
+    await ctx.send(
+        reply
+    )
 
 
 @bot.command(name="rules")
@@ -3138,7 +3250,9 @@ async def rules(
             )
 
             sent_messages.append({
-                "channel_name": channel_name,
+                "channel_name": (
+                    channel_name
+                ),
                 "channel_id": (
                     sent_message.channel.id
                 ),
@@ -3161,24 +3275,29 @@ async def rules(
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": (
-                datetime.now(TZ)
-                .strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+            "created_at": datetime.now(
+                TZ
+            ).strftime(
+                "%Y-%m-%d %H:%M:%S"
             ),
             "created_by": (
                 ctx.author.name
             ),
-            "text_preview": message[:150],
-            "messages": sent_messages,
+            "text_preview": (
+                message[:150]
+            ),
+            "messages": (
+                sent_messages
+            ),
             "deleted": False,
             "type": "rules"
         }
 
         clock_data[
             "announcement_batches"
-        ].append(batch)
+        ].append(
+            batch
+        )
 
         clock_data[
             "announcement_batches"
@@ -3214,6 +3333,7 @@ async def rules(
         )
 
         reply += "or\n"
+
         reply += (
             "`!deleteannouncement latest`"
             "\n\n"
@@ -3224,7 +3344,8 @@ async def rules(
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in sent_channels
+                for name
+                in sent_channels
             ]
         )
 
@@ -3239,7 +3360,8 @@ async def rules(
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in failed_channels
+                for name
+                in failed_channels
             ]
         )
 
@@ -3249,7 +3371,9 @@ async def rules(
             "sent to any channel."
         )
 
-    await ctx.send(reply)
+    await ctx.send(
+        reply
+    )
 
 
 @bot.command(
@@ -3464,7 +3588,9 @@ async def training(
             )
 
             sent_messages.append({
-                "channel_name": channel_name,
+                "channel_name": (
+                    channel_name
+                ),
                 "channel_id": (
                     sent_message.channel.id
                 ),
@@ -3487,11 +3613,10 @@ async def training(
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": (
-                datetime.now(TZ)
-                .strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+            "created_at": datetime.now(
+                TZ
+            ).strftime(
+                "%Y-%m-%d %H:%M:%S"
             ),
             "created_by": (
                 ctx.author.name
@@ -3501,14 +3626,18 @@ async def training(
                 if training_text
                 else "Training attachment"
             ),
-            "messages": sent_messages,
+            "messages": (
+                sent_messages
+            ),
             "deleted": False,
             "type": "training"
         }
 
         clock_data[
             "announcement_batches"
-        ].append(batch)
+        ].append(
+            batch
+        )
 
         clock_data[
             "announcement_batches"
@@ -3545,6 +3674,7 @@ async def training(
         )
 
         reply += "or\n"
+
         reply += (
             "`!deletetraining latest`"
             "\n\n"
@@ -3555,7 +3685,8 @@ async def training(
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in sent_channels
+                for name
+                in sent_channels
             ]
         )
 
@@ -3570,7 +3701,8 @@ async def training(
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in failed_channels
+                for name
+                in failed_channels
             ]
         )
 
@@ -3581,7 +3713,9 @@ async def training(
             "any channel."
         )
 
-    await ctx.send(reply)
+    await ctx.send(
+        reply
+    )
 
 
 @bot.command(
@@ -4118,7 +4252,9 @@ async def checkreminders(ctx):
         )
 
         channel_name = normalize_name(
-            shift["channel_name"]
+            shift[
+                "channel_name"
+            ]
         )
 
         reminder_key = (
@@ -4320,7 +4456,9 @@ async def shift_reminder_loop():
         )
 
         channel_name = normalize_name(
-            shift["channel_name"]
+            shift[
+                "channel_name"
+            ]
         )
 
         reminder_key = (
