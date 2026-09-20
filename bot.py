@@ -22,23 +22,47 @@ except ValueError:
     GUILD_ID = None
 
 SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")
-FARM_REPORT_CHANNEL_NAME = (os.getenv("FARM_REPORT_CHANNEL_NAME") or "farms").strip().lower().replace("#", "")
-CONTENT_REQUEST_CHANNEL_NAME = (os.getenv("CONTENT_REQUEST_CHANNEL_NAME") or "content-requests").strip().lower().replace("#", "")
-APPROVAL_CHANNEL_NAME = (os.getenv("APPROVAL_CHANNEL_NAME") or "approvals").strip().lower().replace("#", "")
+
+FARM_REPORT_CHANNEL_NAME = (
+    os.getenv("FARM_REPORT_CHANNEL_NAME") or "farms"
+).strip().lower().replace("#", "")
+
+CONTENT_REQUEST_CHANNEL_NAME = (
+    os.getenv("CONTENT_REQUEST_CHANNEL_NAME") or "content-requests"
+).strip().lower().replace("#", "")
+
+APPROVAL_CHANNEL_NAME = (
+    os.getenv("APPROVAL_CHANNEL_NAME") or "approvals"
+).strip().lower().replace("#", "")
 
 TZ = ZoneInfo("Europe/Berlin")
 
-DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR") or "."
+DATA_DIR = (
+    os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    or os.getenv("DATA_DIR")
+    or "."
+)
+
 os.makedirs(DATA_DIR, exist_ok=True)
-DATA_FILE = os.path.join(DATA_DIR, "clock_data.json")
+
+DATA_FILE = os.path.join(
+    DATA_DIR,
+    "clock_data.json"
+)
 
 EARLY_STREAK_WINDOW_MINUTES = 180
 LATE_STREAK_WINDOW_MINUTES = 180
+
 NO_CLOCKIN_ALERT_AFTER_MINUTES = 5
 NO_CLOCKIN_ALERT_WINDOW_MINUTES = 10
+
 ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES = 15
 
-STREAK_SHIFT_TIMES_RAW = os.getenv("STREAK_SHIFT_TIMES") or "02:00,10:00,18:00"
+STREAK_SHIFT_TIMES_RAW = (
+    os.getenv("STREAK_SHIFT_TIMES")
+    or "02:00,10:00,18:00"
+)
+
 STREAK_SHIFT_TIMES = [
     shift_time.strip()
     for shift_time in STREAK_SHIFT_TIMES_RAW.split(",")
@@ -78,24 +102,38 @@ def load_clock_data():
     if "mma_requests" not in data:
         data["mma_requests"] = {}
 
-    for channel_name, value in list(data["clocked_in_channels"].items()):
+    for channel_name, value in list(
+        data["clocked_in_channels"].items()
+    ):
         if isinstance(value, dict):
-            data["clocked_in_channels"][channel_name] = [value]
+            data["clocked_in_channels"][channel_name] = [
+                value
+            ]
 
     return data
 
 
 def save_clock_data():
     with open(DATA_FILE, "w") as f:
-        json.dump(clock_data, f, indent=4)
+        json.dump(
+            clock_data,
+            f,
+            indent=4
+        )
 
 
 def load_schedule_from_csv():
-    response = requests.get(SHEET_CSV_URL)
+    response = requests.get(
+        SHEET_CSV_URL
+    )
+
     response.raise_for_status()
 
     csv_text = response.text
-    reader = csv.DictReader(io.StringIO(csv_text))
+
+    reader = csv.DictReader(
+        io.StringIO(csv_text)
+    )
 
     schedule = []
 
@@ -105,29 +143,66 @@ def load_schedule_from_csv():
 
         announcement_channel = ""
 
-        if "announcement_channel_name" in row and row["announcement_channel_name"]:
-            announcement_channel = row["announcement_channel_name"].strip().lower()
+        if (
+            "announcement_channel_name" in row
+            and row["announcement_channel_name"]
+        ):
+            announcement_channel = (
+                row["announcement_channel_name"]
+                .strip()
+                .lower()
+            )
 
         schedule.append({
-            "account": row["account"].strip(),
-            "channel_name": row["channel_name"].strip().lower(),
-            "shift_time": row["shift_time"].strip(),
-            "scheduled_chatter_username": row["scheduled_chatter_username"].strip().lower().replace("@", ""),
-            "supervisor_role_name": row["supervisor_role_name"].strip().replace("@", ""),
-            "announcement_channel_name": announcement_channel
+            "account": row[
+                "account"
+            ].strip(),
+
+            "channel_name": row[
+                "channel_name"
+            ].strip().lower(),
+
+            "shift_time": row[
+                "shift_time"
+            ].strip(),
+
+            "scheduled_chatter_username": (
+                row[
+                    "scheduled_chatter_username"
+                ]
+                .strip()
+                .lower()
+                .replace("@", "")
+            ),
+
+            "supervisor_role_name": (
+                row[
+                    "supervisor_role_name"
+                ]
+                .strip()
+                .replace("@", "")
+            ),
+
+            "announcement_channel_name": (
+                announcement_channel
+            )
         })
 
     return schedule
 
 
 clock_data = load_clock_data()
+
 schedule_cache = []
 
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
 
 
 @bot.event
@@ -135,8 +210,15 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    print(f"SAW MESSAGE: {message.author} said {message.content}")
-    await bot.process_commands(message)
+    print(
+        f"SAW MESSAGE: "
+        f"{message.author} said "
+        f"{message.content}"
+    )
+
+    await bot.process_commands(
+        message
+    )
 
 
 def get_main_guild(ctx=None):
@@ -144,7 +226,10 @@ def get_main_guild(ctx=None):
         return ctx.guild
 
     if GUILD_ID:
-        guild = bot.get_guild(GUILD_ID)
+        guild = bot.get_guild(
+            GUILD_ID
+        )
+
         if guild is not None:
             return guild
 
@@ -158,143 +243,308 @@ def normalize_name(value):
     if not value:
         return ""
 
-    return value.lower().replace("@", "").replace("#", "").strip()
+    return (
+        value
+        .lower()
+        .replace("@", "")
+        .replace("#", "")
+        .strip()
+    )
 
 
 def get_channel_prefix(channel_name):
-    channel_name = normalize_name(channel_name)
+    channel_name = normalize_name(
+        channel_name
+    )
 
     if "-" in channel_name:
-        return channel_name.split("-")[0].strip()
+        return (
+            channel_name
+            .split("-")[0]
+            .strip()
+        )
 
     return channel_name.strip()
 
 
-def get_channel_key_from_parts(guild_id, channel_name):
-    guild_part = str(guild_id) if guild_id else "unknown-guild"
-    return f"{guild_part}:{normalize_name(channel_name)}"
+def get_channel_key_from_parts(
+    guild_id,
+    channel_name
+):
+    guild_part = (
+        str(guild_id)
+        if guild_id
+        else "unknown-guild"
+    )
+
+    return (
+        f"{guild_part}:"
+        f"{normalize_name(channel_name)}"
+    )
 
 
 def get_channel_key(ctx):
-    guild_id = ctx.guild.id if ctx.guild else None
-    return get_channel_key_from_parts(guild_id, ctx.channel.name)
+    guild_id = (
+        ctx.guild.id
+        if ctx.guild
+        else None
+    )
+
+    return get_channel_key_from_parts(
+        guild_id,
+        ctx.channel.name
+    )
 
 
-def get_channel_name_from_key(channel_key):
+def get_channel_name_from_key(
+    channel_key
+):
     if ":" in channel_key:
-        return channel_key.split(":", 1)[1]
+        return channel_key.split(
+            ":",
+            1
+        )[1]
 
     return channel_key
 
 
-def get_channel_storage_key_for_checkout(guild_id, channel_name):
-    channel_name = normalize_name(channel_name)
-    channel_key = get_channel_key_from_parts(guild_id, channel_name)
+def get_channel_storage_key_for_checkout(
+    guild_id,
+    channel_name
+):
+    channel_name = normalize_name(
+        channel_name
+    )
 
-    if channel_key in clock_data["clocked_in_channels"]:
+    channel_key = (
+        get_channel_key_from_parts(
+            guild_id,
+            channel_name
+        )
+    )
+
+    if (
+        channel_key
+        in clock_data[
+            "clocked_in_channels"
+        ]
+    ):
         return channel_key
 
-    if channel_name in clock_data["clocked_in_channels"]:
+    if (
+        channel_name
+        in clock_data[
+            "clocked_in_channels"
+        ]
+    ):
         return channel_name
 
     return channel_key
 
 
-def get_clockins_for_guild_channel(guild_id, channel_name):
-    channel_name = normalize_name(channel_name)
-    channel_key = get_channel_key_from_parts(guild_id, channel_name)
+def get_clockins_for_guild_channel(
+    guild_id,
+    channel_name
+):
+    channel_name = normalize_name(
+        channel_name
+    )
 
-    if channel_key in clock_data["clocked_in_channels"]:
-        return clock_data["clocked_in_channels"].get(channel_key, [])
+    channel_key = (
+        get_channel_key_from_parts(
+            guild_id,
+            channel_name
+        )
+    )
 
-    return clock_data["clocked_in_channels"].get(channel_name, [])
+    if (
+        channel_key
+        in clock_data[
+            "clocked_in_channels"
+        ]
+    ):
+        return clock_data[
+            "clocked_in_channels"
+        ].get(
+            channel_key,
+            []
+        )
+
+    return clock_data[
+        "clocked_in_channels"
+    ].get(
+        channel_name,
+        []
+    )
 
 
-def is_channel_clocked_in(guild_id, channel_name):
-    clockins = get_clockins_for_guild_channel(guild_id, channel_name)
+def is_channel_clocked_in(
+    guild_id,
+    channel_name
+):
+    clockins = (
+        get_clockins_for_guild_channel(
+            guild_id,
+            channel_name
+        )
+    )
+
     return len(clockins) > 0
 
 
 def parse_clockin_time(clockin):
     try:
         return datetime.strptime(
-            clockin.get("time", ""),
+            clockin.get(
+                "time",
+                ""
+            ),
             "%Y-%m-%d %H:%M:%S"
-        ).replace(tzinfo=TZ)
+        ).replace(
+            tzinfo=TZ
+        )
+
     except Exception:
         return None
 
 
-def sendable_chunks(text, limit=1900):
+def sendable_chunks(
+    text,
+    limit=1900
+):
     chunks = []
     current = ""
 
     for line in text.splitlines(True):
-        if len(current) + len(line) > limit:
+        if (
+            len(current)
+            + len(line)
+            > limit
+        ):
             if current:
-                chunks.append(current)
+                chunks.append(
+                    current
+                )
+
             current = line
+
         else:
             current += line
 
     if current:
-        chunks.append(current)
+        chunks.append(
+            current
+        )
 
     return chunks
 
 
-def member_matches_username(member, username):
-    username = normalize_name(username)
+def member_matches_username(
+    member,
+    username
+):
+    username = normalize_name(
+        username
+    )
 
     possible_names = [
-        normalize_name(member.name),
-        normalize_name(member.display_name)
+        normalize_name(
+            member.name
+        ),
+        normalize_name(
+            member.display_name
+        )
     ]
 
     if member.global_name:
-        possible_names.append(normalize_name(member.global_name))
+        possible_names.append(
+            normalize_name(
+                member.global_name
+            )
+        )
 
     return username in possible_names
 
 
-def find_member_by_username(guild, username):
+def find_member_by_username(
+    guild,
+    username
+):
     for member in guild.members:
-        if member_matches_username(member, username):
+        if member_matches_username(
+            member,
+            username
+        ):
             return member
 
     return None
 
 
-def find_member_by_identifier(guild, identifier):
+def find_member_by_identifier(
+    guild,
+    identifier
+):
     if not identifier:
         return None
 
     identifier = identifier.strip()
-    clean_identifier = identifier.replace("<@", "").replace(">", "").replace("!", "")
+
+    clean_identifier = (
+        identifier
+        .replace("<@", "")
+        .replace(">", "")
+        .replace("!", "")
+    )
 
     if clean_identifier.isdigit():
-        member = guild.get_member(int(clean_identifier))
+        member = guild.get_member(
+            int(clean_identifier)
+        )
+
         if member is not None:
             return member
 
-    return find_member_by_username(guild, identifier)
+    return find_member_by_username(
+        guild,
+        identifier
+    )
 
 
-def find_channel_by_name(guild, channel_name):
-    channel_name = normalize_name(channel_name)
+def find_channel_by_name(
+    guild,
+    channel_name
+):
+    channel_name = normalize_name(
+        channel_name
+    )
 
     for channel in guild.text_channels:
-        if normalize_name(channel.name) == channel_name:
+        if (
+            normalize_name(
+                channel.name
+            )
+            == channel_name
+        ):
             return channel
 
     return None
 
 
-def find_role_by_name(guild, role_name):
-    role_name = normalize_name(role_name)
+def find_role_by_name(
+    guild,
+    role_name
+):
+    role_name = normalize_name(
+        role_name
+    )
 
     for role in guild.roles:
-        if normalize_name(role.name) == role_name:
+        if (
+            normalize_name(
+                role.name
+            )
+            == role_name
+        ):
             return role
 
     return None
@@ -304,74 +554,158 @@ def get_unique_announcement_channels():
     channels = []
 
     for shift in schedule_cache:
-        channel_name = shift.get("announcement_channel_name", "").strip().lower()
+        channel_name = (
+            shift
+            .get(
+                "announcement_channel_name",
+                ""
+            )
+            .strip()
+            .lower()
+        )
 
-        if channel_name and channel_name not in channels:
-            channels.append(channel_name)
+        if (
+            channel_name
+            and channel_name
+            not in channels
+        ):
+            channels.append(
+                channel_name
+            )
 
     return channels
 
 
-def get_unique_rules_channels(guild):
+def get_unique_rules_channels(
+    guild
+):
     channels = []
 
     for channel in guild.text_channels:
-        channel_name = normalize_name(channel.name)
+        channel_name = normalize_name(
+            channel.name
+        )
 
-        if "rules" in channel_name and channel_name not in channels:
-            channels.append(channel_name)
+        if (
+            "rules" in channel_name
+            and channel_name
+            not in channels
+        ):
+            channels.append(
+                channel_name
+            )
 
     return channels
 
 
-def get_unique_training_channels(guild):
+def get_unique_training_channels(
+    guild
+):
     channels = []
 
     for channel in guild.text_channels:
-        channel_name = normalize_name(channel.name)
+        channel_name = normalize_name(
+            channel.name
+        )
 
-        if "training" in channel_name and channel_name not in channels:
-            channels.append(channel_name)
+        if (
+            "training"
+            in channel_name
+            and channel_name
+            not in channels
+        ):
+            channels.append(
+                channel_name
+            )
 
     return channels
 
 
-def find_account_by_source_channel(channel_name):
-    channel_name = normalize_name(channel_name)
-    source_prefix = get_channel_prefix(channel_name)
+def find_account_by_source_channel(
+    channel_name
+):
+    channel_name = normalize_name(
+        channel_name
+    )
+
+    source_prefix = get_channel_prefix(
+        channel_name
+    )
 
     for shift in schedule_cache:
         possible_channels = [
-            normalize_name(shift.get("channel_name")),
-            normalize_name(shift.get("announcement_channel_name"))
+            normalize_name(
+                shift.get(
+                    "channel_name"
+                )
+            ),
+            normalize_name(
+                shift.get(
+                    "announcement_channel_name"
+                )
+            )
         ]
 
-        if channel_name in possible_channels:
-            return shift.get("account", "Unknown Model")
+        if (
+            channel_name
+            in possible_channels
+        ):
+            return shift.get(
+                "account",
+                "Unknown Model"
+            )
 
     for shift in schedule_cache:
         possible_channels = [
-            normalize_name(shift.get("channel_name")),
-            normalize_name(shift.get("announcement_channel_name"))
+            normalize_name(
+                shift.get(
+                    "channel_name"
+                )
+            ),
+            normalize_name(
+                shift.get(
+                    "announcement_channel_name"
+                )
+            )
         ]
 
         for possible_channel in possible_channels:
-            if possible_channel and get_channel_prefix(possible_channel) == source_prefix:
-                return shift.get("account", "Unknown Model")
+            if (
+                possible_channel
+                and get_channel_prefix(
+                    possible_channel
+                )
+                == source_prefix
+            ):
+                return shift.get(
+                    "account",
+                    "Unknown Model"
+                )
 
     return "Unknown Model"
 
 
-def get_or_create_streak_data(member):
-    user_id = str(member.id)
+def get_or_create_streak_data(
+    member
+):
+    user_id = str(
+        member.id
+    )
 
     if "streaks" not in clock_data:
         clock_data["streaks"] = {}
 
-    if user_id not in clock_data["streaks"]:
-        clock_data["streaks"][user_id] = {}
+    if (
+        user_id
+        not in clock_data["streaks"]
+    ):
+        clock_data[
+            "streaks"
+        ][user_id] = {}
 
-    streak_data = clock_data["streaks"][user_id]
+    streak_data = clock_data[
+        "streaks"
+    ][user_id]
 
     defaults = {
         "username": member.name,
@@ -396,19 +730,35 @@ def get_or_create_streak_data(member):
         if key not in streak_data:
             streak_data[key] = value
 
-    streak_data["username"] = member.name
-    streak_data["display_name"] = member.display_name
+    streak_data[
+        "username"
+    ] = member.name
+
+    streak_data[
+        "display_name"
+    ] = member.display_name
 
     return streak_data
 
 
 def get_current_streak(member):
-    streak_data = get_or_create_streak_data(member)
-    return streak_data.get("streak", 0)
+    streak_data = (
+        get_or_create_streak_data(
+            member
+        )
+    )
+
+    return streak_data.get(
+        "streak",
+        0
+    )
 
 
 def can_manage_streaks(member):
-    if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+    if (
+        member.guild_permissions.administrator
+        or member.guild_permissions.manage_guild
+    ):
         return True
 
     allowed_roles = [
@@ -426,153 +776,400 @@ def can_manage_streaks(member):
     ]
 
     for role in member.roles:
-        if normalize_name(role.name) in allowed_roles:
+        if (
+            normalize_name(
+                role.name
+            )
+            in allowed_roles
+        ):
             return True
 
     return False
 
 
 def can_manage_broadcasts(member):
-    return can_manage_streaks(member)
+    return can_manage_streaks(
+        member
+    )
 
 
 def get_streak_shift_datetimes():
     now = datetime.now(TZ)
+
     shifts = []
 
     for shift_time in STREAK_SHIFT_TIMES:
         for day_offset in [-1, 0, 1]:
-            shift_date = (now + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            shift_date = (
+                now
+                + timedelta(
+                    days=day_offset
+                )
+            ).strftime(
+                "%Y-%m-%d"
+            )
 
             try:
-                shift_datetime = datetime.strptime(
-                    f"{shift_date} {shift_time}",
-                    "%Y-%m-%d %H:%M"
-                ).replace(tzinfo=TZ)
+                shift_datetime = (
+                    datetime.strptime(
+                        f"{shift_date} "
+                        f"{shift_time}",
+                        "%Y-%m-%d %H:%M"
+                    ).replace(
+                        tzinfo=TZ
+                    )
+                )
+
             except ValueError:
                 continue
 
-            shifts.append(shift_datetime)
+            shifts.append(
+                shift_datetime
+            )
 
-    shifts = sorted(list(set(shifts)))
+    shifts = sorted(
+        list(
+            set(shifts)
+        )
+    )
+
     return shifts
 
 
 def find_independent_streak_clockin_status():
-    now = datetime.now(TZ).replace(second=0, microsecond=0)
+    now = datetime.now(
+        TZ
+    ).replace(
+        second=0,
+        microsecond=0
+    )
+
     possible_matches = []
 
-    for shift_datetime in get_streak_shift_datetimes():
-        early_start = shift_datetime - timedelta(minutes=EARLY_STREAK_WINDOW_MINUTES)
-        late_end = shift_datetime + timedelta(minutes=LATE_STREAK_WINDOW_MINUTES)
+    for shift_datetime in (
+        get_streak_shift_datetimes()
+    ):
+        early_start = (
+            shift_datetime
+            - timedelta(
+                minutes=(
+                    EARLY_STREAK_WINDOW_MINUTES
+                )
+            )
+        )
 
-        if early_start <= now <= shift_datetime:
-            distance = abs((shift_datetime - now).total_seconds())
+        late_end = (
+            shift_datetime
+            + timedelta(
+                minutes=(
+                    LATE_STREAK_WINDOW_MINUTES
+                )
+            )
+        )
+
+        if (
+            early_start
+            <= now
+            <= shift_datetime
+        ):
+            distance = abs(
+                (
+                    shift_datetime
+                    - now
+                ).total_seconds()
+            )
+
             possible_matches.append({
                 "status": "on_time",
-                "shift_datetime": shift_datetime,
+                "shift_datetime": (
+                    shift_datetime
+                ),
                 "distance": distance
             })
 
-        elif shift_datetime < now <= late_end:
-            distance = abs((now - shift_datetime).total_seconds())
+        elif (
+            shift_datetime
+            < now
+            <= late_end
+        ):
+            distance = abs(
+                (
+                    now
+                    - shift_datetime
+                ).total_seconds()
+            )
+
             possible_matches.append({
                 "status": "late",
-                "shift_datetime": shift_datetime,
+                "shift_datetime": (
+                    shift_datetime
+                ),
                 "distance": distance
             })
 
     if not possible_matches:
-        return "outside_window", None
+        return (
+            "outside_window",
+            None
+        )
 
-    possible_matches.sort(key=lambda item: item["distance"])
-    best_match = possible_matches[0]
+    possible_matches.sort(
+        key=lambda item: item[
+            "distance"
+        ]
+    )
 
-    return best_match["status"], best_match
+    best_match = (
+        possible_matches[0]
+    )
+
+    return (
+        best_match["status"],
+        best_match
+    )
 
 
-def update_streak_for_clockin(member, channel_name, guild_id=None):
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
-    now_text = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+def update_streak_for_clockin(
+    member,
+    channel_name,
+    guild_id=None
+):
+    today = datetime.now(
+        TZ
+    ).strftime(
+        "%Y-%m-%d"
+    )
 
-    streak_data = get_or_create_streak_data(member)
+    now_text = datetime.now(
+        TZ
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
-    streak_data["last_clockin_date"] = today
-    streak_data["last_clockin_channel"] = normalize_name(channel_name)
-    streak_data["last_clockin_guild_id"] = str(guild_id) if guild_id else None
+    streak_data = (
+        get_or_create_streak_data(
+            member
+        )
+    )
 
-    if streak_data.get("first_clockin_date") == today:
-        return streak_data.get("streak", 0), "already_counted_today"
+    streak_data[
+        "last_clockin_date"
+    ] = today
 
-    streak_status, shift_info = find_independent_streak_clockin_status()
+    streak_data[
+        "last_clockin_channel"
+    ] = normalize_name(
+        channel_name
+    )
 
-    streak_data["first_clockin_date"] = today
-    streak_data["first_clockin_status"] = streak_status
-    streak_data["first_clockin_channel"] = normalize_name(channel_name)
-    streak_data["first_clockin_time"] = now_text
+    streak_data[
+        "last_clockin_guild_id"
+    ] = (
+        str(guild_id)
+        if guild_id
+        else None
+    )
+
+    if (
+        streak_data.get(
+            "first_clockin_date"
+        )
+        == today
+    ):
+        return (
+            streak_data.get(
+                "streak",
+                0
+            ),
+            "already_counted_today"
+        )
+
+    streak_status, shift_info = (
+        find_independent_streak_clockin_status()
+    )
+
+    streak_data[
+        "first_clockin_date"
+    ] = today
+
+    streak_data[
+        "first_clockin_status"
+    ] = streak_status
+
+    streak_data[
+        "first_clockin_channel"
+    ] = normalize_name(
+        channel_name
+    )
+
+    streak_data[
+        "first_clockin_time"
+    ] = now_text
 
     if shift_info is not None:
-        streak_data["first_clockin_shift_time"] = shift_info["shift_datetime"].strftime("%H:%M")
+        streak_data[
+            "first_clockin_shift_time"
+        ] = (
+            shift_info[
+                "shift_datetime"
+            ].strftime(
+                "%H:%M"
+            )
+        )
+
     else:
-        streak_data["first_clockin_shift_time"] = None
+        streak_data[
+            "first_clockin_shift_time"
+        ] = None
 
     if streak_status == "on_time":
-        if streak_data.get("last_counted_date") != today:
-            streak_data["streak"] = streak_data.get("streak", 0) + 1
-            streak_data["last_counted_date"] = today
+        if (
+            streak_data.get(
+                "last_counted_date"
+            )
+            != today
+        ):
+            streak_data[
+                "streak"
+            ] = (
+                streak_data.get(
+                    "streak",
+                    0
+                )
+                + 1
+            )
 
-        return streak_data.get("streak", 0), "counted"
+            streak_data[
+                "last_counted_date"
+            ] = today
+
+        return (
+            streak_data.get(
+                "streak",
+                0
+            ),
+            "counted"
+        )
 
     if streak_status == "late":
-        streak_data["streak"] = 0
-        streak_data["last_reset_date"] = today
-        streak_data["last_counted_date"] = today
+        streak_data[
+            "streak"
+        ] = 0
 
-        return streak_data.get("streak", 0), "reset_late"
+        streak_data[
+            "last_reset_date"
+        ] = today
 
-    return streak_data.get("streak", 0), "outside_window"
+        streak_data[
+            "last_counted_date"
+        ] = today
+
+        return (
+            streak_data.get(
+                "streak",
+                0
+            ),
+            "reset_late"
+        )
+
+    return (
+        streak_data.get(
+            "streak",
+            0
+        ),
+        "outside_window"
+    )
 
 
-def get_shift_datetimes_for_channel(channel_name):
-    channel_name = normalize_name(channel_name)
+def get_shift_datetimes_for_channel(
+    channel_name
+):
+    channel_name = normalize_name(
+        channel_name
+    )
+
     now = datetime.now(TZ)
+
     shifts = []
 
     for shift in schedule_cache:
-        if normalize_name(shift.get("channel_name")) != channel_name:
+        if (
+            normalize_name(
+                shift.get(
+                    "channel_name"
+                )
+            )
+            != channel_name
+        ):
             continue
 
         for day_offset in [-1, 0, 1]:
-            shift_date = (now + timedelta(days=day_offset)).strftime("%Y-%m-%d")
+            shift_date = (
+                now
+                + timedelta(
+                    days=day_offset
+                )
+            ).strftime(
+                "%Y-%m-%d"
+            )
 
             try:
-                shift_datetime = datetime.strptime(
-                    f"{shift_date} {shift['shift_time']}",
-                    "%Y-%m-%d %H:%M"
-                ).replace(tzinfo=TZ)
+                shift_datetime = (
+                    datetime.strptime(
+                        f"{shift_date} "
+                        f"{shift['shift_time']}",
+                        "%Y-%m-%d %H:%M"
+                    ).replace(
+                        tzinfo=TZ
+                    )
+                )
+
             except ValueError:
                 continue
 
-            shifts.append(shift_datetime)
+            shifts.append(
+                shift_datetime
+            )
 
-    shifts = sorted(list(set(shifts)))
+    shifts = sorted(
+        list(
+            set(shifts)
+        )
+    )
+
     return shifts
 
 
-def get_allstatus_target_shift(channel_name):
-    shifts = get_shift_datetimes_for_channel(channel_name)
+def get_allstatus_target_shift(
+    channel_name
+):
+    shifts = (
+        get_shift_datetimes_for_channel(
+            channel_name
+        )
+    )
 
     if not shifts:
         return None
 
     now = datetime.now(TZ)
+
     target_shift = None
 
     for shift_datetime in shifts:
-        switch_time = shift_datetime - timedelta(minutes=ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES)
+        switch_time = (
+            shift_datetime
+            - timedelta(
+                minutes=(
+                    ALLSTATUS_NEXT_SHIFT_SWITCH_MINUTES
+                )
+            )
+        )
 
         if now >= switch_time:
-            target_shift = shift_datetime
+            target_shift = (
+                shift_datetime
+            )
 
     if target_shift is not None:
         return target_shift
@@ -584,131 +1181,292 @@ def get_allstatus_target_shift(channel_name):
     return shifts[-1]
 
 
-def get_allstatus_valid_clockins(guild_id, channel_name):
-    clockins = get_clockins_for_guild_channel(guild_id, channel_name)
-    target_shift = get_allstatus_target_shift(channel_name)
+def get_allstatus_valid_clockins(
+    guild_id,
+    channel_name
+):
+    clockins = (
+        get_clockins_for_guild_channel(
+            guild_id,
+            channel_name
+        )
+    )
+
+    target_shift = (
+        get_allstatus_target_shift(
+            channel_name
+        )
+    )
 
     if target_shift is None:
-        return clockins, None
+        return (
+            clockins,
+            None
+        )
 
-    cutoff_time = target_shift - timedelta(minutes=EARLY_STREAK_WINDOW_MINUTES)
+    cutoff_time = (
+        target_shift
+        - timedelta(
+            minutes=(
+                EARLY_STREAK_WINDOW_MINUTES
+            )
+        )
+    )
+
     valid_clockins = []
 
     for clockin in clockins:
-        clockin_time = parse_clockin_time(clockin)
+        clockin_time = (
+            parse_clockin_time(
+                clockin
+            )
+        )
 
         if clockin_time is None:
             continue
 
         if clockin_time >= cutoff_time:
-            valid_clockins.append(clockin)
+            valid_clockins.append(
+                clockin
+            )
 
-    return valid_clockins, target_shift
+    return (
+        valid_clockins,
+        target_shift
+    )
 
 
 def create_announcement_batch_id():
-    return datetime.now(TZ).strftime("%Y%m%d-%H%M%S")
+    return datetime.now(
+        TZ
+    ).strftime(
+        "%Y%m%d-%H%M%S"
+    )
 
 
 def get_latest_active_announcement_batch():
-    batches = clock_data.get("announcement_batches", [])
+    batches = clock_data.get(
+        "announcement_batches",
+        []
+    )
 
     for batch in reversed(batches):
-        if not batch.get("deleted", False):
+        if not batch.get(
+            "deleted",
+            False
+        ):
             return batch
 
     return None
 
 
-def get_latest_active_batch_by_type(batch_type):
-    batches = clock_data.get("announcement_batches", [])
+def get_latest_active_batch_by_type(
+    batch_type
+):
+    batches = clock_data.get(
+        "announcement_batches",
+        []
+    )
 
     for batch in reversed(batches):
-        if not batch.get("deleted", False) and batch.get("type") == batch_type:
+        if (
+            not batch.get(
+                "deleted",
+                False
+            )
+            and batch.get(
+                "type"
+            )
+            == batch_type
+        ):
             return batch
 
     return None
 
 
-async def delete_saved_batch_messages(ctx, batch, label="announcement"):
+async def delete_saved_batch_messages(
+    ctx,
+    batch,
+    label="announcement"
+):
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. "
+            "Check GUILD_ID."
+        )
         return
 
     deleted_count = 0
     already_deleted_count = 0
     failed_messages = []
 
-    for message_info in batch.get("messages", []):
-        channel_id = message_info.get("channel_id")
-        message_id = message_info.get("message_id")
-        channel_name = message_info.get("channel_name", "unknown-channel")
+    for message_info in batch.get(
+        "messages",
+        []
+    ):
+        channel_id = (
+            message_info.get(
+                "channel_id"
+            )
+        )
 
-        channel = bot.get_channel(int(channel_id)) if channel_id else None
+        message_id = (
+            message_info.get(
+                "message_id"
+            )
+        )
+
+        channel_name = (
+            message_info.get(
+                "channel_name",
+                "unknown-channel"
+            )
+        )
+
+        channel = (
+            bot.get_channel(
+                int(channel_id)
+            )
+            if channel_id
+            else None
+        )
 
         if channel is None:
-            channel = find_channel_by_name(guild, channel_name)
+            channel = find_channel_by_name(
+                guild,
+                channel_name
+            )
 
         if channel is None:
-            failed_messages.append(f"#{channel_name} — channel not found")
+            failed_messages.append(
+                f"#{channel_name} "
+                f"— channel not found"
+            )
             continue
 
         try:
-            discord_message = await channel.fetch_message(int(message_id))
+            discord_message = (
+                await channel.fetch_message(
+                    int(message_id)
+                )
+            )
+
             await discord_message.delete()
+
             deleted_count += 1
 
         except discord.NotFound:
             already_deleted_count += 1
 
         except discord.Forbidden:
-            failed_messages.append(f"#{channel_name} — no permission to delete")
+            failed_messages.append(
+                f"#{channel_name} "
+                f"— no permission to delete"
+            )
 
         except Exception as e:
-            print(f"Failed to delete {label} from {channel_name}: {e}")
-            failed_messages.append(f"#{channel_name} — delete failed")
+            print(
+                f"Failed to delete "
+                f"{label} from "
+                f"{channel_name}: {e}"
+            )
+
+            failed_messages.append(
+                f"#{channel_name} "
+                f"— delete failed"
+            )
 
     batch["deleted"] = True
-    batch["deleted_at"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-    batch["deleted_by"] = ctx.author.name
+
+    batch[
+        "deleted_at"
+    ] = datetime.now(
+        TZ
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    batch[
+        "deleted_by"
+    ] = ctx.author.name
+
     save_clock_data()
 
     reply = ""
-    reply += f"🗑️ Delete finished for {label} batch `{batch.get('batch_id')}`.\n\n"
-    reply += f"Deleted: **{deleted_count}** messages\n"
-    reply += f"Already deleted / not found: **{already_deleted_count}** messages\n"
+
+    reply += (
+        f"🗑️ Delete finished for "
+        f"{label} batch "
+        f"`{batch.get('batch_id')}`."
+        f"\n\n"
+    )
+
+    reply += (
+        f"Deleted: "
+        f"**{deleted_count}** messages\n"
+    )
+
+    reply += (
+        f"Already deleted / not found: "
+        f"**{already_deleted_count}** messages\n"
+    )
 
     if failed_messages:
         reply += "\n❌ Failed:\n"
-        reply += "\n".join(failed_messages)
+        reply += "\n".join(
+            failed_messages
+        )
 
     await ctx.send(reply)
 
 
+# =========================
+# MMA APPROVAL SYSTEM
+# =========================
+
 def create_mma_request_id():
-    return datetime.now(TZ).strftime("%Y%m%d-%H%M%S-%f")
+    return datetime.now(
+        TZ
+    ).strftime(
+        "%Y%m%d-%H%M%S-%f"
+    )
 
 
 def get_mma_request(request_id):
-    return clock_data.get("mma_requests", {}).get(request_id)
+    return clock_data.get(
+        "mma_requests",
+        {}
+    ).get(
+        request_id
+    )
 
 
-def build_mma_embed(request_data):
-    status = request_data.get("status", "pending")
+def build_mma_embed(
+    request_data
+):
+    status = request_data.get(
+        "status",
+        "pending"
+    )
 
     if status == "approved":
         color = discord.Color.green()
         status_text = "✅ APPROVED"
+
     elif status == "declined":
         color = discord.Color.red()
         status_text = "❌ DECLINED"
+
     else:
         color = discord.Color.orange()
         status_text = "⏳ PENDING APPROVAL"
 
-    mass_message = request_data.get("mass_message", "")
+    mass_message = request_data.get(
+        "mass_message",
+        ""
+    )
 
     embed = discord.Embed(
         title="📨 Mass Message Approval",
@@ -717,7 +1475,9 @@ def build_mma_embed(request_data):
         timestamp=datetime.now(TZ)
     )
 
-    model_name = request_data.get("model_name")
+    model_name = request_data.get(
+        "model_name"
+    )
 
     if model_name:
         embed.add_field(
@@ -728,13 +1488,17 @@ def build_mma_embed(request_data):
 
     embed.add_field(
         name="Submitted by",
-        value=f"<@{request_data.get('requester_id')}>",
+        value=(
+            f"<@{request_data.get('requester_id')}>"
+        ),
         inline=True
     )
 
     embed.add_field(
         name="Source",
-        value=f"<#{request_data.get('source_channel_id')}>",
+        value=(
+            f"<#{request_data.get('source_channel_id')}>"
+        ),
         inline=True
     )
 
@@ -744,20 +1508,32 @@ def build_mma_embed(request_data):
         inline=True
     )
 
-    attachments = request_data.get("attachments", [])
+    attachments = request_data.get(
+        "attachments",
+        []
+    )
 
     if attachments:
         attachment_lines = []
 
-        for index, attachment_url in enumerate(attachments, start=1):
+        for index, attachment_url in enumerate(
+            attachments,
+            start=1
+        ):
             attachment_lines.append(
-                f"[Attachment {index}]({attachment_url})"
+                f"[Attachment {index}]"
+                f"({attachment_url})"
             )
 
-        attachment_text = "\n".join(attachment_lines)
+        attachment_text = "\n".join(
+            attachment_lines
+        )
 
         if len(attachment_text) > 1024:
-            attachment_text = attachment_text[:1000] + "..."
+            attachment_text = (
+                attachment_text[:1000]
+                + "..."
+            )
 
         embed.add_field(
             name="Attachments",
@@ -765,14 +1541,24 @@ def build_mma_embed(request_data):
             inline=False
         )
 
-    if status in ["approved", "declined"]:
-        decided_by = request_data.get("decided_by")
-        decided_at = request_data.get("decided_at")
+    if status in [
+        "approved",
+        "declined"
+    ]:
+        decided_by = request_data.get(
+            "decided_by"
+        )
+
+        decided_at = request_data.get(
+            "decided_at"
+        )
 
         if decided_by:
             embed.add_field(
                 name="Reviewed by",
-                value=f"<@{decided_by}>",
+                value=(
+                    f"<@{decided_by}>"
+                ),
                 inline=True
             )
 
@@ -784,60 +1570,108 @@ def build_mma_embed(request_data):
             )
 
     embed.set_footer(
-        text=f"Approval ID: {request_data.get('request_id', 'unknown')}"
+        text=(
+            f"Approval ID: "
+            f"{request_data.get('request_id', 'unknown')}"
+        )
     )
 
     return embed
 
 
-async def get_channel_from_id(channel_id):
+async def get_channel_from_id(
+    channel_id
+):
     if not channel_id:
         return None
 
     try:
-        channel_id = int(channel_id)
-    except (TypeError, ValueError):
+        channel_id = int(
+            channel_id
+        )
+
+    except (
+        TypeError,
+        ValueError
+    ):
         return None
 
-    channel = bot.get_channel(channel_id)
+    channel = bot.get_channel(
+        channel_id
+    )
 
     if channel is not None:
         return channel
 
     try:
-        return await bot.fetch_channel(channel_id)
+        return await bot.fetch_channel(
+            channel_id
+        )
+
     except Exception as e:
-        print(f"Could not fetch channel {channel_id}: {e}")
+        print(
+            f"Could not fetch channel "
+            f"{channel_id}: {e}"
+        )
+
         return None
 
 
-async def handle_mma_decision(interaction, request_id, decision):
-    request_data = get_mma_request(request_id)
+async def handle_mma_decision(
+    interaction,
+    request_id,
+    decision
+):
+    request_data = get_mma_request(
+        request_id
+    )
 
     if request_data is None:
         await interaction.response.send_message(
-            "❌ This approval request no longer exists.",
+            "❌ This approval request "
+            "no longer exists.",
             ephemeral=True
         )
         return
 
-    current_status = request_data.get("status", "pending")
+    current_status = request_data.get(
+        "status",
+        "pending"
+    )
 
     if current_status != "pending":
         await interaction.response.send_message(
-            f"⚠️ This mass message has already been **{current_status}**.",
+            f"⚠️ This mass message has already "
+            f"been **{current_status}**.",
             ephemeral=True
         )
         return
 
     if decision == "approved":
-        request_data["status"] = "approved"
-    else:
-        request_data["status"] = "declined"
+        request_data[
+            "status"
+        ] = "approved"
 
-    request_data["decided_by"] = str(interaction.user.id)
-    request_data["decided_by_name"] = interaction.user.display_name
-    request_data["decided_at"] = datetime.now(TZ).strftime(
+    else:
+        request_data[
+            "status"
+        ] = "declined"
+
+    request_data[
+        "decided_by"
+    ] = str(
+        interaction.user.id
+    )
+
+    request_data[
+        "decided_by_name"
+    ] = interaction.user.display_name
+
+    request_data[
+        "decided_at"
+    ] = datetime.now(
+        TZ
+    ).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
 
@@ -848,88 +1682,133 @@ async def handle_mma_decision(interaction, request_id, decision):
         disabled=True
     )
 
-    embed = build_mma_embed(request_data)
+    embed = build_mma_embed(
+        request_data
+    )
 
     await interaction.response.edit_message(
         embed=embed,
         view=disabled_view
     )
 
-    source_channel = await get_channel_from_id(
-        request_data.get("source_channel_id")
+    source_channel = (
+        await get_channel_from_id(
+            request_data.get(
+                "source_channel_id"
+            )
+        )
     )
 
     if source_channel is None:
         print(
-            f"MMA RESULT ERROR | Could not find source channel "
-            f"{request_data.get('source_channel_id')} for request {request_id}"
+            f"MMA RESULT ERROR | "
+            f"Could not find source channel "
+            f"{request_data.get('source_channel_id')} "
+            f"for request {request_id}"
         )
         return
 
-    requester_id = request_data.get("requester_id")
-    mass_message = request_data.get("mass_message", "")
-
-    preview = mass_message
-
-    if len(preview) > 1200:
-        preview = preview[:1200] + "..."
-
-    quoted_preview = preview.replace("\n", "\n> ")
+    requester_id = request_data.get(
+        "requester_id"
+    )
 
     if decision == "approved":
         result_text = (
-            f"✅ <@{requester_id}> your mass message has been **APPROVED** "
-            f"by {interaction.user.mention}.\n\n"
-            f"**Mass Message:**\n"
-            f"> {quoted_preview}"
+            f"✅ <@{requester_id}> "
+            f"your Mass Message has been approved "
+            f"and is ready to send!\n\n"
+            f"Approved by: "
+            f"{interaction.user.mention}"
         )
+
     else:
         result_text = (
-            f"❌ <@{requester_id}> your mass message has been **DECLINED** "
-            f"by {interaction.user.mention}.\n\n"
-            f"**Mass Message:**\n"
-            f"> {quoted_preview}"
+            f"❌ <@{requester_id}> "
+            f"your Mass Message was declined "
+            f"and needs changes before sending.\n\n"
+            f"Reviewed by: "
+            f"{interaction.user.mention}"
         )
 
-    await source_channel.send(result_text)
+    await source_channel.send(
+        result_text
+    )
 
 
-class MMAApprovalView(discord.ui.View):
-    def __init__(self, request_id, disabled=False):
-        super().__init__(timeout=None)
+class MMAApprovalView(
+    discord.ui.View
+):
+    def __init__(
+        self,
+        request_id,
+        disabled=False
+    ):
+        super().__init__(
+            timeout=None
+        )
 
         self.request_id = request_id
 
-        approve_button = discord.ui.Button(
-            label="Approve",
-            emoji="✅",
-            style=discord.ButtonStyle.success,
-            custom_id=f"mma_approve_{request_id}",
-            disabled=disabled
+        approve_button = (
+            discord.ui.Button(
+                label="Approve",
+                emoji="✅",
+                style=(
+                    discord.ButtonStyle.success
+                ),
+                custom_id=(
+                    f"mma_approve_"
+                    f"{request_id}"
+                ),
+                disabled=disabled
+            )
         )
 
-        decline_button = discord.ui.Button(
-            label="Decline",
-            emoji="❌",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"mma_decline_{request_id}",
-            disabled=disabled
+        decline_button = (
+            discord.ui.Button(
+                label="Decline",
+                emoji="❌",
+                style=(
+                    discord.ButtonStyle.danger
+                ),
+                custom_id=(
+                    f"mma_decline_"
+                    f"{request_id}"
+                ),
+                disabled=disabled
+            )
         )
 
-        approve_button.callback = self.approve_callback
-        decline_button.callback = self.decline_callback
+        approve_button.callback = (
+            self.approve_callback
+        )
 
-        self.add_item(approve_button)
-        self.add_item(decline_button)
+        decline_button.callback = (
+            self.decline_callback
+        )
 
-    async def approve_callback(self, interaction):
+        self.add_item(
+            approve_button
+        )
+
+        self.add_item(
+            decline_button
+        )
+
+    async def approve_callback(
+        self,
+        interaction
+    ):
         await handle_mma_decision(
             interaction,
             self.request_id,
             "approved"
         )
 
-    async def decline_callback(self, interaction):
+    async def decline_callback(
+        self,
+        interaction
+    ):
         await handle_mma_decision(
             interaction,
             self.request_id,
@@ -945,7 +1824,9 @@ async def on_ready():
     global schedule_cache
     global mma_views_registered
 
-    schedule_cache = load_schedule_from_csv()
+    schedule_cache = (
+        load_schedule_from_csv()
+    )
 
     if not shift_reminder_loop.is_running():
         shift_reminder_loop.start()
@@ -953,169 +1834,352 @@ async def on_ready():
     if not mma_views_registered:
         pending_count = 0
 
-        for request_id, request_data in clock_data.get(
+        for (
+            request_id,
+            request_data
+        ) in clock_data.get(
             "mma_requests",
             {}
         ).items():
-            if request_data.get("status") == "pending":
-                bot.add_view(
-                    MMAApprovalView(request_id)
+
+            if (
+                request_data.get(
+                    "status"
                 )
+                == "pending"
+            ):
+                bot.add_view(
+                    MMAApprovalView(
+                        request_id
+                    )
+                )
+
                 pending_count += 1
 
         mma_views_registered = True
 
         print(
-            f"Registered {pending_count} pending MMA approval views."
+            f"Registered "
+            f"{pending_count} pending "
+            f"MMA approval views."
         )
 
-    print(f"Logged in as {bot.user}")
-    print(f"Loaded {len(schedule_cache)} shifts.")
-    print(f"Using data file: {DATA_FILE}")
-    print(f"Streak shift times: {', '.join(STREAK_SHIFT_TIMES)}")
+    print(
+        f"Logged in as {bot.user}"
+    )
 
-    print("Servers bot can see:")
+    print(
+        f"Loaded "
+        f"{len(schedule_cache)} shifts."
+    )
+
+    print(
+        f"Using data file: "
+        f"{DATA_FILE}"
+    )
+
+    print(
+        f"Streak shift times: "
+        f"{', '.join(STREAK_SHIFT_TIMES)}"
+    )
+
+    print(
+        "Servers bot can see:"
+    )
 
     for guild in bot.guilds:
-        print(f"- {guild.name} | {guild.id}")
+        print(
+            f"- {guild.name} | "
+            f"{guild.id}"
+        )
 
 
 @bot.command(name="ci")
 async def ci(ctx):
-    current_channel_name = normalize_name(ctx.channel.name)
+    current_channel_name = (
+        normalize_name(
+            ctx.channel.name
+        )
+    )
 
-    if "clock" not in current_channel_name:
+    if (
+        "clock"
+        not in current_channel_name
+    ):
         await ctx.send(
-            "❌ Clock-ins must be submitted in the model's **clock-in** channel."
+            "❌ Clock-ins must be submitted "
+            "in the model's **clock-in** channel."
         )
         return
 
-    user_id = str(ctx.author.id)
-    username = ctx.author.name.lower()
-    display_name = ctx.author.display_name
-    channel_name = normalize_name(ctx.channel.name)
-    channel_key = get_channel_key(ctx)
-    guild_id = ctx.guild.id if ctx.guild else None
-    now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    user_id = str(
+        ctx.author.id
+    )
 
-    if channel_key not in clock_data["clocked_in_channels"]:
-        clock_data["clocked_in_channels"][channel_key] = []
+    username = (
+        ctx.author.name.lower()
+    )
 
-    for clockin in clock_data["clocked_in_channels"][channel_key]:
-        old_user_id = clockin.get("user_id")
-        old_username = clockin.get("username")
+    display_name = (
+        ctx.author.display_name
+    )
 
-        if old_user_id == user_id or old_username == username:
-            await ctx.message.add_reaction("❌")
+    channel_name = normalize_name(
+        ctx.channel.name
+    )
+
+    channel_key = (
+        get_channel_key(ctx)
+    )
+
+    guild_id = (
+        ctx.guild.id
+        if ctx.guild
+        else None
+    )
+
+    now = datetime.now(
+        TZ
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    if (
+        channel_key
+        not in clock_data[
+            "clocked_in_channels"
+        ]
+    ):
+        clock_data[
+            "clocked_in_channels"
+        ][channel_key] = []
+
+    for clockin in clock_data[
+        "clocked_in_channels"
+    ][channel_key]:
+
+        old_user_id = clockin.get(
+            "user_id"
+        )
+
+        old_username = clockin.get(
+            "username"
+        )
+
+        if (
+            old_user_id == user_id
+            or old_username == username
+        ):
+            await ctx.message.add_reaction(
+                "❌"
+            )
             return
 
-    clock_data["clocked_in_channels"][channel_key].append({
+    clock_data[
+        "clocked_in_channels"
+    ][channel_key].append({
         "user_id": user_id,
         "username": username,
         "display_name": display_name,
         "time": now,
         "channel_name": channel_name,
-        "guild_id": str(guild_id) if guild_id else None
+        "guild_id": (
+            str(guild_id)
+            if guild_id
+            else None
+        )
     })
 
-    streak, streak_status = update_streak_for_clockin(
-        ctx.author,
-        channel_name,
-        guild_id
+    streak, streak_status = (
+        update_streak_for_clockin(
+            ctx.author,
+            channel_name,
+            guild_id
+        )
     )
 
     save_clock_data()
 
-    await ctx.message.add_reaction("✅")
+    await ctx.message.add_reaction(
+        "✅"
+    )
 
     if streak_status == "reset_late":
         await ctx.send(
-            f"🔥 Streak {streak} - your streak has been reset because "
-            f"of a late clock-in"
+            f"🔥 Streak {streak} - "
+            f"your streak has been reset "
+            f"because of a late clock-in"
         )
+
     else:
-        await ctx.send(f"🔥 Streak {streak}")
+        await ctx.send(
+            f"🔥 Streak {streak}"
+        )
 
 
 @bot.command(name="co")
 async def co(ctx):
-    current_channel_name = normalize_name(ctx.channel.name)
+    current_channel_name = (
+        normalize_name(
+            ctx.channel.name
+        )
+    )
 
-    if "clock" not in current_channel_name:
+    if (
+        "clock"
+        not in current_channel_name
+    ):
         await ctx.send(
-            "❌ Clock-outs must be submitted in the model's **clock-in** channel."
+            "❌ Clock-outs must be submitted "
+            "in the model's **clock-in** channel."
         )
         return
 
-    user_id = str(ctx.author.id)
-    username = ctx.author.name.lower()
-    channel_name = normalize_name(ctx.channel.name)
-    guild_id = ctx.guild.id if ctx.guild else None
-    channel_key = get_channel_storage_key_for_checkout(
-        guild_id,
-        channel_name
+    user_id = str(
+        ctx.author.id
     )
+
+    username = (
+        ctx.author.name.lower()
+    )
+
+    channel_name = normalize_name(
+        ctx.channel.name
+    )
+
+    guild_id = (
+        ctx.guild.id
+        if ctx.guild
+        else None
+    )
+
+    channel_key = (
+        get_channel_storage_key_for_checkout(
+            guild_id,
+            channel_name
+        )
+    )
+
     now = datetime.now(TZ)
 
-    if channel_key not in clock_data["clocked_in_channels"]:
-        await ctx.message.add_reaction("❌")
+    if (
+        channel_key
+        not in clock_data[
+            "clocked_in_channels"
+        ]
+    ):
+        await ctx.message.add_reaction(
+            "❌"
+        )
         return
 
     user_clockin = None
 
-    for clockin in clock_data["clocked_in_channels"][channel_key]:
-        old_user_id = clockin.get("user_id")
-        old_username = clockin.get("username")
+    for clockin in clock_data[
+        "clocked_in_channels"
+    ][channel_key]:
 
-        if old_user_id == user_id or old_username == username:
+        old_user_id = clockin.get(
+            "user_id"
+        )
+
+        old_username = clockin.get(
+            "username"
+        )
+
+        if (
+            old_user_id == user_id
+            or old_username == username
+        ):
             user_clockin = clockin
             break
 
     if user_clockin is None:
-        await ctx.message.add_reaction("❌")
+        await ctx.message.add_reaction(
+            "❌"
+        )
         return
 
     start = datetime.strptime(
         user_clockin["time"],
         "%Y-%m-%d %H:%M:%S"
-    ).replace(tzinfo=TZ)
+    ).replace(
+        tzinfo=TZ
+    )
 
     duration = now - start
 
-    clock_data["clocked_in_channels"][channel_key].remove(
+    clock_data[
+        "clocked_in_channels"
+    ][channel_key].remove(
         user_clockin
     )
 
-    if not clock_data["clocked_in_channels"][channel_key]:
-        del clock_data["clocked_in_channels"][channel_key]
+    if not clock_data[
+        "clocked_in_channels"
+    ][channel_key]:
+
+        del clock_data[
+            "clocked_in_channels"
+        ][channel_key]
 
     save_clock_data()
 
-    total_minutes = int(duration.total_seconds() // 60)
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-
-    print(
-        f"{username} clocked out from {channel_name}. "
-        f"Shift duration: {hours}h {minutes}m"
+    total_minutes = int(
+        duration.total_seconds()
+        // 60
     )
 
-    await ctx.message.add_reaction("✅")
+    hours = (
+        total_minutes
+        // 60
+    )
+
+    minutes = (
+        total_minutes
+        % 60
+    )
+
+    print(
+        f"{username} clocked out "
+        f"from {channel_name}. "
+        f"Shift duration: "
+        f"{hours}h {minutes}m"
+    )
+
+    await ctx.message.add_reaction(
+        "✅"
+    )
 
 
 @bot.command()
 async def status(ctx):
-    if not clock_data["clocked_in_channels"]:
+    if not clock_data[
+        "clocked_in_channels"
+    ]:
         await ctx.send(
-            "Nobody is currently clocked in on any account."
+            "Nobody is currently clocked "
+            "in on any account."
         )
         return
 
-    current_guild_id = str(ctx.guild.id) if ctx.guild else None
-    msg = "**Currently clocked in by account/channel:**\n"
+    current_guild_id = (
+        str(ctx.guild.id)
+        if ctx.guild
+        else None
+    )
+
+    msg = (
+        "**Currently clocked in "
+        "by account/channel:**\n"
+    )
+
     shown_any = False
 
-    for channel_key, clockins in clock_data[
+    for (
+        channel_key,
+        clockins
+    ) in clock_data[
         "clocked_in_channels"
     ].items():
 
@@ -1128,22 +2192,33 @@ async def status(ctx):
         ):
             continue
 
-        display_channel_name = get_channel_name_from_key(
-            channel_key
+        display_channel_name = (
+            get_channel_name_from_key(
+                channel_key
+            )
         )
 
         if clockins:
-            display_channel_name = clockins[0].get(
-                "channel_name",
-                display_channel_name
+            display_channel_name = (
+                clockins[0].get(
+                    "channel_name",
+                    display_channel_name
+                )
             )
 
-        msg += f"\n**{display_channel_name}**\n"
+        msg += (
+            f"\n**{display_channel_name}**\n"
+        )
 
         for clockin in clockins:
             name = (
-                clockin.get("display_name")
-                or clockin.get("username", "unknown")
+                clockin.get(
+                    "display_name"
+                )
+                or clockin.get(
+                    "username",
+                    "unknown"
+                )
             )
 
             time = clockin.get(
@@ -1151,17 +2226,26 @@ async def status(ctx):
                 "unknown time"
             )
 
-            msg += f"- {name} since **{time}**\n"
+            msg += (
+                f"- {name} since "
+                f"**{time}**\n"
+            )
+
             shown_any = True
 
     if not shown_any:
         await ctx.send(
-            "Nobody is currently clocked in on this server."
+            "Nobody is currently clocked "
+            "in on this server."
         )
         return
 
-    for chunk in sendable_chunks(msg):
-        await ctx.send(chunk)
+    for chunk in sendable_chunks(
+        msg
+    ):
+        await ctx.send(
+            chunk
+        )
 
 
 @bot.command(name="allstatus")
@@ -1170,54 +2254,81 @@ async def allstatus(ctx):
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
     if not schedule_cache:
         await ctx.send(
-            "❌ Schedule is empty. Use `!reloadschedule` first."
+            "❌ Schedule is empty. "
+            "Use `!reloadschedule` first."
         )
         return
 
     guild_id = guild.id
+
     unique_channels = []
     seen_channels = set()
 
     for shift in schedule_cache:
         channel_name = normalize_name(
-            shift.get("channel_name")
+            shift.get(
+                "channel_name"
+            )
         )
 
-        if not channel_name or channel_name in seen_channels:
+        if (
+            not channel_name
+            or channel_name
+            in seen_channels
+        ):
             continue
 
-        seen_channels.add(channel_name)
+        seen_channels.add(
+            channel_name
+        )
 
         unique_channels.append({
             "account": shift.get(
                 "account",
                 "Unknown Model"
             ),
-            "channel_name": channel_name
+            "channel_name": (
+                channel_name
+            )
         })
 
-    now_text = datetime.now(TZ).strftime("%H:%M")
+    now_text = datetime.now(
+        TZ
+    ).strftime(
+        "%H:%M"
+    )
 
     msg = (
-        f"**📊 All Model Status** — `{now_text}`\n"
+        f"**📊 All Model Status** "
+        f"— `{now_text}`\n"
     )
 
     msg += (
-        "_15 minutes before the next shift, old clock-ins "
-        "from the previous shift do not count here._\n\n"
+        "_15 minutes before the next shift, "
+        "old clock-ins from the previous shift "
+        "do not count here._\n\n"
     )
 
     for item in unique_channels:
-        account = item["account"]
-        channel_name = item["channel_name"]
+        account = item[
+            "account"
+        ]
 
-        valid_clockins, target_shift = (
+        channel_name = item[
+            "channel_name"
+        ]
+
+        (
+            valid_clockins,
+            target_shift
+        ) = (
             get_allstatus_valid_clockins(
                 guild_id,
                 channel_name
@@ -1225,7 +2336,12 @@ async def allstatus(ctx):
         )
 
         if target_shift is not None:
-            shift_text = target_shift.strftime("%H:%M")
+            shift_text = (
+                target_shift.strftime(
+                    "%H:%M"
+                )
+            )
+
         else:
             shift_text = "unknown"
 
@@ -1234,25 +2350,31 @@ async def allstatus(ctx):
 
             for clockin in valid_clockins:
                 name = (
-                    clockin.get("display_name")
+                    clockin.get(
+                        "display_name"
+                    )
                     or clockin.get(
                         "username",
                         "unknown"
                     )
                 )
 
-                clockin_time = clockin.get(
-                    "time",
-                    "unknown time"
+                clockin_time = (
+                    clockin.get(
+                        "time",
+                        "unknown time"
+                    )
                 )
 
                 names.append(
-                    f"{name} since `{clockin_time}`"
+                    f"{name} since "
+                    f"`{clockin_time}`"
                 )
 
             msg += (
                 f"✅ **{account}** "
-                f"(`#{channel_name}` / shift `{shift_text}`)\n"
+                f"(`#{channel_name}` / "
+                f"shift `{shift_text}`)\n"
             )
 
             msg += (
@@ -1264,51 +2386,84 @@ async def allstatus(ctx):
         else:
             msg += (
                 f"❌ **{account}** "
-                f"(`#{channel_name}` / shift `{shift_text}`) "
+                f"(`#{channel_name}` / "
+                f"shift `{shift_text}`) "
                 f"— nobody ready for this shift\n"
             )
 
-    for chunk in sendable_chunks(msg):
-        await ctx.send(chunk)
+    for chunk in sendable_chunks(
+        msg
+    ):
+        await ctx.send(
+            chunk
+        )
 
 
 @bot.command()
 async def reloadschedule(ctx):
     global schedule_cache
 
-    schedule_cache = load_schedule_from_csv()
+    schedule_cache = (
+        load_schedule_from_csv()
+    )
 
-    clock_data["reminded"] = {}
-    clock_data["no_clockin_alerts"] = {}
+    clock_data[
+        "reminded"
+    ] = {}
+
+    clock_data[
+        "no_clockin_alerts"
+    ] = {}
 
     save_clock_data()
 
     await ctx.send(
-        f"✅ Schedule reloaded and reminders reset. "
-        f"Shifts loaded: **{len(schedule_cache)}**"
+        f"✅ Schedule reloaded "
+        f"and reminders reset. "
+        f"Shifts loaded: "
+        f"**{len(schedule_cache)}**"
     )
 
 
 @bot.command(name="setstreak")
-async def setstreak(ctx, *, args: str = None):
-    if not can_manage_streaks(ctx.author):
+async def setstreak(
+    ctx,
+    *,
+    args: str = None
+):
+    if not can_manage_streaks(
+        ctx.author
+    ):
         await ctx.send(
-            "❌ You don't have permission to set streaks."
+            "❌ You don't have permission "
+            "to set streaks."
         )
         return
 
     if not args:
         await ctx.send(
-            "Use it like this: `!setstreak username 12`"
+            "Use it like this: "
+            "`!setstreak username 12`"
         )
         return
 
     try:
-        user_identifier, streak_text = args.rsplit(" ", 1)
-        streak_value = int(streak_text)
+        (
+            user_identifier,
+            streak_text
+        ) = args.rsplit(
+            " ",
+            1
+        )
+
+        streak_value = int(
+            streak_text
+        )
+
     except ValueError:
         await ctx.send(
-            "Use it like this: `!setstreak username 12`"
+            "Use it like this: "
+            "`!setstreak username 12`"
         )
         return
 
@@ -1322,7 +2477,8 @@ async def setstreak(ctx, *, args: str = None):
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
@@ -1333,54 +2489,98 @@ async def setstreak(ctx, *, args: str = None):
 
     if member is None:
         await ctx.send(
-            "❌ User not found. Use their Discord username, "
-            "display name, mention, or Discord ID."
+            "❌ User not found. "
+            "Use their Discord username, "
+            "display name, mention, "
+            "or Discord ID."
         )
         return
 
-    today = datetime.now(TZ).strftime(
+    today = datetime.now(
+        TZ
+    ).strftime(
         "%Y-%m-%d"
     )
 
-    now_text = datetime.now(TZ).strftime(
+    now_text = datetime.now(
+        TZ
+    ).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
 
-    streak_data = get_or_create_streak_data(member)
+    streak_data = (
+        get_or_create_streak_data(
+            member
+        )
+    )
 
     old_streak = streak_data.get(
         "streak",
         0
     )
 
-    last_clockin_channel_name = streak_data.get(
-        "last_clockin_channel"
+    last_clockin_channel_name = (
+        streak_data.get(
+            "last_clockin_channel"
+        )
     )
 
-    last_clockin_guild_id = streak_data.get(
-        "last_clockin_guild_id"
+    last_clockin_guild_id = (
+        streak_data.get(
+            "last_clockin_guild_id"
+        )
     )
 
-    streak_data["streak"] = streak_value
-    streak_data["last_counted_date"] = today
-    streak_data["last_reset_date"] = None
-    streak_data["first_clockin_date"] = today
-    streak_data["first_clockin_status"] = "manual_set"
-    streak_data["first_clockin_channel"] = (
-        f"manual:{ctx.channel.name}"
+    streak_data[
+        "streak"
+    ] = streak_value
+
+    streak_data[
+        "last_counted_date"
+    ] = today
+
+    streak_data[
+        "last_reset_date"
+    ] = None
+
+    streak_data[
+        "first_clockin_date"
+    ] = today
+
+    streak_data[
+        "first_clockin_status"
+    ] = "manual_set"
+
+    streak_data[
+        "first_clockin_channel"
+    ] = (
+        f"manual:"
+        f"{ctx.channel.name}"
     )
-    streak_data["first_clockin_time"] = now_text
-    streak_data["manual_set_date"] = now_text
-    streak_data["manual_set_by"] = ctx.author.name
-    streak_data["manual_set_channel"] = (
-        ctx.channel.name
-    )
+
+    streak_data[
+        "first_clockin_time"
+    ] = now_text
+
+    streak_data[
+        "manual_set_date"
+    ] = now_text
+
+    streak_data[
+        "manual_set_by"
+    ] = ctx.author.name
+
+    streak_data[
+        "manual_set_channel"
+    ] = ctx.channel.name
 
     save_clock_data()
 
     await ctx.send(
-        f"✅ Streak for **{member.display_name}** "
-        f"has been set from **{old_streak}** "
+        f"✅ Streak for "
+        f"**{member.display_name}** "
+        f"has been set from "
+        f"**{old_streak}** "
         f"to **{streak_value}**."
     )
 
@@ -1388,67 +2588,90 @@ async def setstreak(ctx, *, args: str = None):
 
     if (
         last_clockin_guild_id
-        and str(last_clockin_guild_id).isdigit()
+        and str(
+            last_clockin_guild_id
+        ).isdigit()
     ):
         saved_guild = bot.get_guild(
-            int(last_clockin_guild_id)
+            int(
+                last_clockin_guild_id
+            )
         )
 
         if saved_guild is not None:
-            notification_guild = saved_guild
+            notification_guild = (
+                saved_guild
+            )
 
     if last_clockin_channel_name:
-        last_clockin_channel = find_channel_by_name(
-            notification_guild,
-            last_clockin_channel_name
+        last_clockin_channel = (
+            find_channel_by_name(
+                notification_guild,
+                last_clockin_channel_name
+            )
         )
 
-        if last_clockin_channel is not None:
+        if (
+            last_clockin_channel
+            is not None
+        ):
             await last_clockin_channel.send(
                 f"🔥 Streak update for "
                 f"**{member.display_name}**: "
-                f"your streak has been set to "
-                f"**{streak_value}**."
+                f"your streak has been set "
+                f"to **{streak_value}**."
             )
 
         else:
             await ctx.send(
-                f"⚠️ Streak was set, but I could not find "
+                f"⚠️ Streak was set, "
+                f"but I could not find "
                 f"the last clock-in channel: "
                 f"`{last_clockin_channel_name}`"
             )
 
     else:
         await ctx.send(
-            "⚠️ Streak was set, but this user has no saved "
+            "⚠️ Streak was set, "
+            "but this user has no saved "
             "last clock-in channel yet."
         )
 
 
 @bot.command(
     name="contentrequest",
-    aliases=["cr", "needcontent"]
+    aliases=[
+        "cr",
+        "needcontent"
+    ]
 )
 async def contentrequest(
     ctx,
     *,
     request_text: str = None
 ):
-    current_channel_name = normalize_name(
-        ctx.channel.name
+    current_channel_name = (
+        normalize_name(
+            ctx.channel.name
+        )
     )
 
-    if "customs" not in current_channel_name:
+    if (
+        "customs"
+        not in current_channel_name
+    ):
         await ctx.send(
-            "❌ Content requests must be submitted in "
-            "the model's **customs** channel."
+            "❌ Content requests must be "
+            "submitted in the model's "
+            "**customs** channel."
         )
         return
 
     if not request_text:
         await ctx.send(
             "Use it like this: "
-            "`!contentrequest need new SFW selfies for wall`"
+            "`!contentrequest "
+            "need new SFW selfies for wall`"
         )
         return
 
@@ -1456,24 +2679,30 @@ async def contentrequest(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
-    content_channel = find_channel_by_name(
-        guild,
-        CONTENT_REQUEST_CHANNEL_NAME
+    content_channel = (
+        find_channel_by_name(
+            guild,
+            CONTENT_REQUEST_CHANNEL_NAME
+        )
     )
 
     if content_channel is None:
         await ctx.send(
-            f"❌ Content request channel not found: "
+            f"❌ Content request channel "
+            f"not found: "
             f"`{CONTENT_REQUEST_CHANNEL_NAME}`"
         )
         return
 
-    model_name = find_account_by_source_channel(
-        ctx.channel.name
+    model_name = (
+        find_account_by_source_channel(
+            ctx.channel.name
+        )
     )
 
     content_embed = discord.Embed(
@@ -1508,29 +2737,50 @@ async def contentrequest(
 
     content_embed.add_field(
         name="Status",
-        value="👀 Reviewing | ✅ Done | ❌ Declined",
+        value=(
+            "👀 Reviewing | "
+            "✅ Done | "
+            "❌ Declined"
+        ),
         inline=False
     )
 
-    sent_message = await content_channel.send(
-        embed=content_embed
+    sent_message = (
+        await content_channel.send(
+            embed=content_embed
+        )
     )
 
-    for emoji in ["👀", "✅", "❌"]:
+    for emoji in [
+        "👀",
+        "✅",
+        "❌"
+    ]:
         try:
-            await sent_message.add_reaction(emoji)
-        except Exception as e:
-            print(
-                f"Failed to add content request "
-                f"reaction {emoji}: {e}"
+            await sent_message.add_reaction(
+                emoji
             )
 
-    await ctx.message.add_reaction("✅")
+        except Exception as e:
+            print(
+                f"Failed to add "
+                f"content request reaction "
+                f"{emoji}: {e}"
+            )
 
-    await ctx.send(
-        f"✅ Content request sent for **{model_name}**"
+    await ctx.message.add_reaction(
+        "✅"
     )
 
+    await ctx.send(
+        f"✅ Content request sent "
+        f"for **{model_name}**"
+    )
+
+
+# =========================
+# MMA COMMAND
+# =========================
 
 @bot.command(name="mma")
 async def mma(
@@ -1538,14 +2788,20 @@ async def mma(
     *,
     mass_message: str = None
 ):
-    current_channel_name = normalize_name(
-        ctx.channel.name
+    current_channel_name = (
+        normalize_name(
+            ctx.channel.name
+        )
     )
 
-    if "approval" not in current_channel_name:
+    if (
+        "approval"
+        not in current_channel_name
+    ):
         await ctx.send(
-            "❌ Mass message approvals must be submitted "
-            "in a channel that has **approval** in its name."
+            "❌ Mass message approvals must "
+            "be submitted in a channel that "
+            "has **approval** in its name."
         )
         return
 
@@ -1558,8 +2814,8 @@ async def mma(
 
     if len(mass_message) > 4000:
         await ctx.send(
-            "❌ Mass message is too long for "
-            "the approval system."
+            "❌ Mass message is too long "
+            "for the approval system."
         )
         return
 
@@ -1567,46 +2823,69 @@ async def mma(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
-    approval_channel = find_channel_by_name(
-        guild,
-        APPROVAL_CHANNEL_NAME
+    approval_channel = (
+        find_channel_by_name(
+            guild,
+            APPROVAL_CHANNEL_NAME
+        )
     )
 
     if approval_channel is None:
         await ctx.send(
-            f"❌ Approval channel not found: "
+            f"❌ Approval channel "
+            f"not found: "
             f"`#{APPROVAL_CHANNEL_NAME}`"
         )
         return
 
-    request_id = create_mma_request_id()
+    request_id = (
+        create_mma_request_id()
+    )
 
     attachments = [
         attachment.url
-        for attachment in ctx.message.attachments
+        for attachment
+        in ctx.message.attachments
     ]
 
-    model_name = find_account_by_source_channel(
-        ctx.channel.name
+    model_name = (
+        find_account_by_source_channel(
+            ctx.channel.name
+        )
     )
 
     request_data = {
         "request_id": request_id,
-        "requester_id": str(ctx.author.id),
-        "requester_name": ctx.author.display_name,
-        "guild_id": str(guild.id),
-        "source_channel_id": str(ctx.channel.id),
-        "source_channel_name": ctx.channel.name,
-        "source_message_id": str(ctx.message.id),
+        "requester_id": str(
+            ctx.author.id
+        ),
+        "requester_name": (
+            ctx.author.display_name
+        ),
+        "guild_id": str(
+            guild.id
+        ),
+        "source_channel_id": str(
+            ctx.channel.id
+        ),
+        "source_channel_name": (
+            ctx.channel.name
+        ),
+        "source_message_id": str(
+            ctx.message.id
+        ),
         "model_name": model_name,
         "mass_message": mass_message,
         "attachments": attachments,
         "status": "pending",
-        "submitted_at": datetime.now(TZ).strftime(
+        "submitted_at": datetime.now(
+            TZ
+        ).strftime(
             "%Y-%m-%d %H:%M:%S"
         ),
         "approval_channel_id": str(
@@ -1618,17 +2897,27 @@ async def mma(
         "decided_at": None
     }
 
-    if "mma_requests" not in clock_data:
-        clock_data["mma_requests"] = {}
+    if (
+        "mma_requests"
+        not in clock_data
+    ):
+        clock_data[
+            "mma_requests"
+        ] = {}
 
-    clock_data["mma_requests"][
-        request_id
-    ] = request_data
+    clock_data[
+        "mma_requests"
+    ][request_id] = request_data
 
     save_clock_data()
 
-    embed = build_mma_embed(request_data)
-    view = MMAApprovalView(request_id)
+    embed = build_mma_embed(
+        request_data
+    )
+
+    view = MMAApprovalView(
+        request_id
+    )
 
     try:
         approval_message = (
@@ -1640,16 +2929,21 @@ async def mma(
 
         request_data[
             "approval_message_id"
-        ] = str(approval_message.id)
+        ] = str(
+            approval_message.id
+        )
 
         save_clock_data()
 
     except Exception as e:
         print(
-            f"Failed to send MMA approval: {e}"
+            f"Failed to send "
+            f"MMA approval: {e}"
         )
 
-        clock_data["mma_requests"].pop(
+        clock_data[
+            "mma_requests"
+        ].pop(
             request_id,
             None
         )
@@ -1657,16 +2951,20 @@ async def mma(
         save_clock_data()
 
         await ctx.send(
-            "❌ Failed to send the mass message "
+            "❌ Failed to send "
+            "the mass message "
             "for approval."
         )
         return
 
-    await ctx.message.add_reaction("✅")
+    await ctx.message.add_reaction(
+        "✅"
+    )
 
     await ctx.send(
-        f"📨 {ctx.author.mention} your mass message "
-        f"has been sent for approval."
+        f"📨 {ctx.author.mention} "
+        f"your mass message has been "
+        f"sent for approval."
     )
 
 
@@ -1687,7 +2985,8 @@ async def announcement(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
@@ -1697,15 +2996,20 @@ async def announcement(
 
     if not announcement_channels:
         await ctx.send(
-            "❌ No announcement channels found in the sheet. "
-            "Add `announcement_channel_name` column first."
+            "❌ No announcement channels "
+            "found in the sheet. "
+            "Add `announcement_channel_name` "
+            "column first."
         )
         return
 
-    batch_id = create_announcement_batch_id()
+    batch_id = (
+        create_announcement_batch_id()
+    )
 
     announcement_text = (
-        f"📢 **ANNOUNCEMENT**\n\n{message}"
+        f"📢 **ANNOUNCEMENT**\n\n"
+        f"{message}"
     )
 
     if len(announcement_text) > 2000:
@@ -1719,33 +3023,48 @@ async def announcement(
     failed_channels = []
     sent_messages = []
 
-    for channel_name in announcement_channels:
+    for channel_name in (
+        announcement_channels
+    ):
         channel = find_channel_by_name(
             guild,
             channel_name
         )
 
         if channel is None:
-            failed_channels.append(channel_name)
+            failed_channels.append(
+                channel_name
+            )
             continue
 
         try:
-            sent_message = await channel.send(
-                announcement_text
+            sent_message = (
+                await channel.send(
+                    announcement_text
+                )
             )
 
-            sent_channels.append(channel_name)
+            sent_channels.append(
+                channel_name
+            )
 
             sent_messages.append({
-                "channel_name": channel_name,
-                "channel_id": sent_message.channel.id,
-                "message_id": sent_message.id
+                "channel_name": (
+                    channel_name
+                ),
+                "channel_id": (
+                    sent_message.channel.id
+                ),
+                "message_id": (
+                    sent_message.id
+                )
             })
 
         except Exception as e:
             print(
-                f"Failed to send announcement "
-                f"to {channel_name}: {e}"
+                f"Failed to send "
+                f"announcement to "
+                f"{channel_name}: {e}"
             )
 
             failed_channels.append(
@@ -1755,11 +3074,17 @@ async def announcement(
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": datetime.now(TZ).strftime(
+            "created_at": datetime.now(
+                TZ
+            ).strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
-            "created_by": ctx.author.name,
-            "text_preview": message[:150],
+            "created_by": (
+                ctx.author.name
+            ),
+            "text_preview": (
+                message[:150]
+            ),
             "messages": sent_messages,
             "deleted": False,
             "type": "announcement"
@@ -1767,13 +3092,17 @@ async def announcement(
 
         clock_data[
             "announcement_batches"
-        ].append(batch)
+        ].append(
+            batch
+        )
 
         clock_data[
             "announcement_batches"
-        ] = clock_data[
-            "announcement_batches"
-        ][-50:]
+        ] = (
+            clock_data[
+                "announcement_batches"
+            ][-50:]
+        )
 
         save_clock_data()
 
@@ -1781,12 +3110,14 @@ async def announcement(
 
     if sent_channels:
         reply += (
-            f"✅ Announcement sent to "
-            f"**{len(sent_channels)}** channels.\n\n"
+            f"✅ Announcement sent "
+            f"to **{len(sent_channels)}** "
+            f"channels.\n\n"
         )
 
         reply += (
-            f"**Batch ID:** `{batch_id}`\n\n"
+            f"**Batch ID:** "
+            f"`{batch_id}`\n\n"
         )
 
         reply += (
@@ -1794,17 +3125,24 @@ async def announcement(
         )
 
         reply += (
-            f"`!deleteannouncement {batch_id}`\n"
+            f"`!deleteannouncement "
+            f"{batch_id}`\n"
         )
 
         reply += "or\n"
-        reply += "`!deleteannouncement latest`\n\n"
+
+        reply += (
+            "`!deleteannouncement latest`"
+            "\n\n"
+        )
+
         reply += "**Sent to:**\n"
 
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in sent_channels
+                for name
+                in sent_channels
             ]
         )
 
@@ -1812,22 +3150,27 @@ async def announcement(
         if reply:
             reply += "\n\n"
 
-        reply += "❌ Failed / not found:\n"
+        reply += (
+            "❌ Failed / not found:\n"
+        )
 
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in failed_channels
+                for name
+                in failed_channels
             ]
         )
 
     if not reply:
         reply = (
-            "❌ Announcement was not sent "
-            "to any channel."
+            "❌ Announcement was not "
+            "sent to any channel."
         )
 
-    await ctx.send(reply)
+    await ctx.send(
+        reply
+    )
 
 
 @bot.command(name="rules")
@@ -1847,23 +3190,28 @@ async def rules(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
-    rules_channels = get_unique_rules_channels(
-        guild
+    rules_channels = (
+        get_unique_rules_channels(
+            guild
+        )
     )
 
     if not rules_channels:
         await ctx.send(
             "❌ No rules channels found. "
-            "Make sure model rules channels have "
-            "`rules` in the channel name."
+            "Make sure model rules channels "
+            "have `rules` in the channel name."
         )
         return
 
-    batch_id = create_announcement_batch_id()
+    batch_id = (
+        create_announcement_batch_id()
+    )
 
     rules_text = message
 
@@ -1891,8 +3239,10 @@ async def rules(
             continue
 
         try:
-            sent_message = await channel.send(
-                rules_text
+            sent_message = (
+                await channel.send(
+                    rules_text
+                )
             )
 
             sent_channels.append(
@@ -1900,15 +3250,22 @@ async def rules(
             )
 
             sent_messages.append({
-                "channel_name": channel_name,
-                "channel_id": sent_message.channel.id,
-                "message_id": sent_message.id
+                "channel_name": (
+                    channel_name
+                ),
+                "channel_id": (
+                    sent_message.channel.id
+                ),
+                "message_id": (
+                    sent_message.id
+                )
             })
 
         except Exception as e:
             print(
-                f"Failed to send rules message "
-                f"to {channel_name}: {e}"
+                f"Failed to send rules "
+                f"message to "
+                f"{channel_name}: {e}"
             )
 
             failed_channels.append(
@@ -1918,25 +3275,37 @@ async def rules(
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": datetime.now(TZ).strftime(
+            "created_at": datetime.now(
+                TZ
+            ).strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
-            "created_by": ctx.author.name,
-            "text_preview": message[:150],
-            "messages": sent_messages,
+            "created_by": (
+                ctx.author.name
+            ),
+            "text_preview": (
+                message[:150]
+            ),
+            "messages": (
+                sent_messages
+            ),
             "deleted": False,
             "type": "rules"
         }
 
         clock_data[
             "announcement_batches"
-        ].append(batch)
+        ].append(
+            batch
+        )
 
         clock_data[
             "announcement_batches"
-        ] = clock_data[
-            "announcement_batches"
-        ][-50:]
+        ] = (
+            clock_data[
+                "announcement_batches"
+            ][-50:]
+        )
 
         save_clock_data()
 
@@ -1944,12 +3313,14 @@ async def rules(
 
     if sent_channels:
         reply += (
-            f"✅ Rules message sent to "
-            f"**{len(sent_channels)}** rules channels.\n\n"
+            f"✅ Rules message sent "
+            f"to **{len(sent_channels)}** "
+            f"rules channels.\n\n"
         )
 
         reply += (
-            f"**Batch ID:** `{batch_id}`\n\n"
+            f"**Batch ID:** "
+            f"`{batch_id}`\n\n"
         )
 
         reply += (
@@ -1957,17 +3328,24 @@ async def rules(
         )
 
         reply += (
-            f"`!deleteannouncement {batch_id}`\n"
+            f"`!deleteannouncement "
+            f"{batch_id}`\n"
         )
 
         reply += "or\n"
-        reply += "`!deleteannouncement latest`\n\n"
+
+        reply += (
+            "`!deleteannouncement latest`"
+            "\n\n"
+        )
+
         reply += "**Sent to:**\n"
 
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in sent_channels
+                for name
+                in sent_channels
             ]
         )
 
@@ -1975,22 +3353,27 @@ async def rules(
         if reply:
             reply += "\n\n"
 
-        reply += "❌ Failed / not found:\n"
+        reply += (
+            "❌ Failed / not found:\n"
+        )
 
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in failed_channels
+                for name
+                in failed_channels
             ]
         )
 
     if not reply:
         reply = (
-            "❌ Rules message was not sent "
-            "to any channel."
+            "❌ Rules message was not "
+            "sent to any channel."
         )
 
-    await ctx.send(reply)
+    await ctx.send(
+        reply
+    )
 
 
 @bot.command(
@@ -2006,10 +3389,13 @@ async def training(
     *,
     message: str = None
 ):
-    if not can_manage_broadcasts(ctx.author):
+    if not can_manage_broadcasts(
+        ctx.author
+    ):
         await ctx.send(
-            "❌ You don't have permission to send "
-            "training material to all channels."
+            "❌ You don't have permission "
+            "to send training material "
+            "to all channels."
         )
         return
 
@@ -2017,19 +3403,23 @@ async def training(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
     training_channels = (
-        get_unique_training_channels(guild)
+        get_unique_training_channels(
+            guild
+        )
     )
 
     if not training_channels:
         await ctx.send(
             "❌ No training channels found. "
-            "Make sure training channels have "
-            "`training` in the channel name."
+            "Make sure training channels "
+            "have `training` in the "
+            "channel name."
         )
         return
 
@@ -2040,14 +3430,23 @@ async def training(
         and ctx.message.reference.message_id
     ):
         try:
-            reference_channel = ctx.channel
+            reference_channel = (
+                ctx.channel
+            )
 
-            if ctx.message.reference.channel_id:
-                found_channel = bot.get_channel(
-                    ctx.message.reference.channel_id
+            if (
+                ctx.message.reference.channel_id
+            ):
+                found_channel = (
+                    bot.get_channel(
+                        ctx.message.reference.channel_id
+                    )
                 )
 
-                if found_channel is not None:
+                if (
+                    found_channel
+                    is not None
+                ):
                     reference_channel = (
                         found_channel
                     )
@@ -2060,8 +3459,9 @@ async def training(
 
         except Exception as e:
             print(
-                f"Failed to fetch referenced "
-                f"training message: {e}"
+                f"Failed to fetch "
+                f"referenced training "
+                f"message: {e}"
             )
 
             referenced_message = None
@@ -2070,7 +3470,10 @@ async def training(
         ctx.message.attachments
     )
 
-    training_text = message or ""
+    training_text = (
+        message
+        or ""
+    )
 
     if referenced_message is not None:
         if (
@@ -2089,30 +3492,40 @@ async def training(
                 referenced_message.content
             )
 
-    if not training_text and not source_attachments:
+    if (
+        not training_text
+        and not source_attachments
+    ):
         await ctx.send(
             "Use it like this:\n"
             "`!training message`\n"
-            "or upload a photo/video with `!training`\n"
-            "or reply to a training message/photo/video "
+            "or upload a photo/video "
+            "with `!training`\n"
+            "or reply to a training "
+            "message/photo/video "
             "with `!training`."
         )
         return
 
     if len(training_text) > 2000:
         await ctx.send(
-            "❌ Training message is too long. "
-            "Discord limit is 2000 characters."
+            "❌ Training message is "
+            "too long. Discord limit "
+            "is 2000 characters."
         )
         return
 
-    batch_id = create_announcement_batch_id()
+    batch_id = (
+        create_announcement_batch_id()
+    )
 
     sent_channels = []
     failed_channels = []
     sent_messages = []
 
-    for channel_name in training_channels:
+    for channel_name in (
+        training_channels
+    ):
         channel = find_channel_by_name(
             guild,
             channel_name
@@ -2127,35 +3540,47 @@ async def training(
         try:
             files = []
 
-            for attachment in source_attachments:
+            for attachment in (
+                source_attachments
+            ):
                 files.append(
                     await attachment.to_file()
                 )
 
             if files:
-                sent_message = await channel.send(
-                    content=(
-                        training_text
-                        if training_text
-                        else None
-                    ),
-                    files=files
+                sent_message = (
+                    await channel.send(
+                        content=(
+                            training_text
+                            if training_text
+                            else None
+                        ),
+                        files=files
+                    )
                 )
 
             else:
-                sent_message = await channel.send(
-                    training_text
+                sent_message = (
+                    await channel.send(
+                        training_text
+                    )
                 )
 
-            for emoji in ["👀", "✅", "❌"]:
+            for emoji in [
+                "👀",
+                "✅",
+                "❌"
+            ]:
                 try:
                     await sent_message.add_reaction(
                         emoji
                     )
+
                 except Exception as e:
                     print(
-                        f"Failed to add training "
-                        f"reaction {emoji}: {e}"
+                        f"Failed to add "
+                        f"training reaction "
+                        f"{emoji}: {e}"
                     )
 
             sent_channels.append(
@@ -2163,14 +3588,21 @@ async def training(
             )
 
             sent_messages.append({
-                "channel_name": channel_name,
-                "channel_id": sent_message.channel.id,
-                "message_id": sent_message.id
+                "channel_name": (
+                    channel_name
+                ),
+                "channel_id": (
+                    sent_message.channel.id
+                ),
+                "message_id": (
+                    sent_message.id
+                )
             })
 
         except Exception as e:
             print(
-                f"Failed to send training material "
+                f"Failed to send "
+                f"training material "
                 f"to {channel_name}: {e}"
             )
 
@@ -2181,29 +3613,39 @@ async def training(
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": datetime.now(TZ).strftime(
+            "created_at": datetime.now(
+                TZ
+            ).strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
-            "created_by": ctx.author.name,
+            "created_by": (
+                ctx.author.name
+            ),
             "text_preview": (
                 training_text[:150]
                 if training_text
                 else "Training attachment"
             ),
-            "messages": sent_messages,
+            "messages": (
+                sent_messages
+            ),
             "deleted": False,
             "type": "training"
         }
 
         clock_data[
             "announcement_batches"
-        ].append(batch)
+        ].append(
+            batch
+        )
 
         clock_data[
             "announcement_batches"
-        ] = clock_data[
-            "announcement_batches"
-        ][-50:]
+        ] = (
+            clock_data[
+                "announcement_batches"
+            ][-50:]
+        )
 
         save_clock_data()
 
@@ -2211,31 +3653,40 @@ async def training(
 
     if sent_channels:
         reply += (
-            f"✅ Training material sent to "
-            f"**{len(sent_channels)}** training channels."
-            f"\n\n"
+            f"✅ Training material sent "
+            f"to **{len(sent_channels)}** "
+            f"training channels.\n\n"
         )
 
         reply += (
-            f"**Batch ID:** `{batch_id}`\n\n"
+            f"**Batch ID:** "
+            f"`{batch_id}`\n\n"
         )
 
         reply += (
-            "To delete this training material:\n"
+            "To delete this "
+            "training material:\n"
         )
 
         reply += (
-            f"`!deletetraining {batch_id}`\n"
+            f"`!deletetraining "
+            f"{batch_id}`\n"
         )
 
         reply += "or\n"
-        reply += "`!deletetraining latest`\n\n"
+
+        reply += (
+            "`!deletetraining latest`"
+            "\n\n"
+        )
+
         reply += "**Sent to:**\n"
 
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in sent_channels
+                for name
+                in sent_channels
             ]
         )
 
@@ -2243,36 +3694,47 @@ async def training(
         if reply:
             reply += "\n\n"
 
-        reply += "❌ Failed / not found:\n"
+        reply += (
+            "❌ Failed / not found:\n"
+        )
 
         reply += "\n".join(
             [
                 f"- #{name}"
-                for name in failed_channels
+                for name
+                in failed_channels
             ]
         )
 
     if not reply:
         reply = (
-            "❌ Training material was not sent "
-            "to any channel."
+            "❌ Training material "
+            "was not sent to "
+            "any channel."
         )
 
-    await ctx.send(reply)
+    await ctx.send(
+        reply
+    )
 
 
-@bot.command(name="trainingchannels")
+@bot.command(
+    name="trainingchannels"
+)
 async def trainingchannels(ctx):
     guild = get_main_guild(ctx)
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
-    channels = get_unique_training_channels(
-        guild
+    channels = (
+        get_unique_training_channels(
+            guild
+        )
     )
 
     if not channels:
@@ -2281,7 +3743,9 @@ async def trainingchannels(ctx):
         )
         return
 
-    msg = "**Training channels found:**\n"
+    msg = (
+        "**Training channels found:**\n"
+    )
 
     msg += "\n".join(
         [
@@ -2290,8 +3754,12 @@ async def trainingchannels(ctx):
         ]
     )
 
-    for chunk in sendable_chunks(msg):
-        await ctx.send(chunk)
+    for chunk in sendable_chunks(
+        msg
+    ):
+        await ctx.send(
+            chunk
+        )
 
 
 @bot.command()
@@ -2304,7 +3772,10 @@ async def announcements(ctx):
     active_batches = [
         batch
         for batch in batches
-        if not batch.get("deleted", False)
+        if not batch.get(
+            "deleted",
+            False
+        )
     ]
 
     if not active_batches:
@@ -2313,7 +3784,10 @@ async def announcements(ctx):
         )
         return
 
-    last_batches = active_batches[-10:]
+    last_batches = (
+        active_batches[-10:]
+    )
+
     last_batches.reverse()
 
     msg = (
@@ -2355,35 +3829,46 @@ async def announcements(ctx):
         )
 
         msg += (
-            f"**{batch_id}** — `{batch_type}`\n"
+            f"**{batch_id}** "
+            f"— `{batch_type}`\n"
         )
 
         msg += (
-            f"Created: `{created_at}` "
-            f"by **{created_by}**\n"
+            f"Created: "
+            f"`{created_at}` by "
+            f"**{created_by}**\n"
         )
 
         msg += (
-            f"Channels: **{channel_count}**\n"
+            f"Channels: "
+            f"**{channel_count}**\n"
         )
 
         msg += (
-            f"Preview: {text_preview}\n"
+            f"Preview: "
+            f"{text_preview}\n"
         )
 
         if batch_type == "training":
             msg += (
                 f"Delete: "
-                f"`!deletetraining {batch_id}`\n\n"
+                f"`!deletetraining "
+                f"{batch_id}`\n\n"
             )
+
         else:
             msg += (
                 f"Delete: "
-                f"`!deleteannouncement {batch_id}`\n\n"
+                f"`!deleteannouncement "
+                f"{batch_id}`\n\n"
             )
 
-    for chunk in sendable_chunks(msg):
-        await ctx.send(chunk)
+    for chunk in sendable_chunks(
+        msg
+    ):
+        await ctx.send(
+            chunk
+        )
 
 
 @bot.command()
@@ -2393,10 +3878,12 @@ async def deleteannouncement(
 ):
     if not batch_id:
         await ctx.send(
-            "Please write which announcement to delete.\n\n"
+            "Please write which "
+            "announcement to delete.\n\n"
             "Examples:\n"
             "`!deleteannouncement latest`\n"
-            "`!deleteannouncement 20260620-123456`"
+            "`!deleteannouncement "
+            "20260620-123456`"
         )
         return
 
@@ -2404,7 +3891,8 @@ async def deleteannouncement(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
@@ -2416,12 +3904,16 @@ async def deleteannouncement(
         )
 
     else:
-        for saved_batch in clock_data.get(
-            "announcement_batches",
-            []
+        for saved_batch in (
+            clock_data.get(
+                "announcement_batches",
+                []
+            )
         ):
             if (
-                saved_batch.get("batch_id")
+                saved_batch.get(
+                    "batch_id"
+                )
                 == batch_id
             ):
                 batch = saved_batch
@@ -2429,14 +3921,18 @@ async def deleteannouncement(
 
     if batch is None:
         await ctx.send(
-            "❌ Announcement batch not found."
+            "❌ Announcement batch "
+            "not found."
         )
         return
 
-    if batch.get("deleted", False):
+    if batch.get(
+        "deleted",
+        False
+    ):
         await ctx.send(
-            "This announcement batch was "
-            "already marked as deleted."
+            "This announcement batch "
+            "was already marked as deleted."
         )
         return
 
@@ -2447,12 +3943,16 @@ async def deleteannouncement(
     )
 
 
-@bot.command(name="deletetraining")
+@bot.command(
+    name="deletetraining"
+)
 async def deletetraining(
     ctx,
     batch_id: str = None
 ):
-    if not can_manage_broadcasts(ctx.author):
+    if not can_manage_broadcasts(
+        ctx.author
+    ):
         await ctx.send(
             "❌ You don't have permission "
             "to delete training material."
@@ -2461,11 +3961,12 @@ async def deletetraining(
 
     if not batch_id:
         await ctx.send(
-            "Please write which training material "
-            "to delete.\n\n"
+            "Please write which training "
+            "material to delete.\n\n"
             "Examples:\n"
             "`!deletetraining latest`\n"
-            "`!deletetraining 20260620-123456`"
+            "`!deletetraining "
+            "20260620-123456`"
         )
         return
 
@@ -2473,26 +3974,35 @@ async def deletetraining(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
     batch = None
 
     if batch_id.lower() == "latest":
-        batch = get_latest_active_batch_by_type(
-            "training"
+        batch = (
+            get_latest_active_batch_by_type(
+                "training"
+            )
         )
 
     else:
-        for saved_batch in clock_data.get(
-            "announcement_batches",
-            []
+        for saved_batch in (
+            clock_data.get(
+                "announcement_batches",
+                []
+            )
         ):
             if (
-                saved_batch.get("batch_id")
+                saved_batch.get(
+                    "batch_id"
+                )
                 == batch_id
-                and saved_batch.get("type")
+                and saved_batch.get(
+                    "type"
+                )
                 == "training"
             ):
                 batch = saved_batch
@@ -2504,10 +4014,14 @@ async def deletetraining(
         )
         return
 
-    if batch.get("deleted", False):
+    if batch.get(
+        "deleted",
+        False
+    ):
         await ctx.send(
-            "This training batch was already "
-            "marked as deleted."
+            "This training batch "
+            "was already marked "
+            "as deleted."
         )
         return
 
@@ -2526,13 +4040,14 @@ async def announcementchannels(ctx):
 
     if not channels:
         await ctx.send(
-            "No announcement channels found "
-            "in the sheet."
+            "No announcement channels "
+            "found in the sheet."
         )
         return
 
     msg = (
-        "**Announcement channels from sheet:**\n"
+        "**Announcement channels "
+        "from sheet:**\n"
     )
 
     msg += "\n".join(
@@ -2542,8 +4057,12 @@ async def announcementchannels(ctx):
         ]
     )
 
-    for chunk in sendable_chunks(msg):
-        await ctx.send(chunk)
+    for chunk in sendable_chunks(
+        msg
+    ):
+        await ctx.send(
+            chunk
+        )
 
 
 @bot.command()
@@ -2552,11 +4071,16 @@ async def farm(
     fan_id: str = None,
     amount: str = None
 ):
-    current_channel_name = normalize_name(
-        ctx.channel.name
+    current_channel_name = (
+        normalize_name(
+            ctx.channel.name
+        )
     )
 
-    if "staff" not in current_channel_name:
+    if (
+        "staff"
+        not in current_channel_name
+    ):
         await ctx.send(
             "❌ Farm logs must be submitted "
             "in the model's **staff** channel."
@@ -2574,7 +4098,8 @@ async def farm(
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. Check GUILD_ID."
+            "❌ Guild not found. "
+            "Check GUILD_ID."
         )
         return
 
@@ -2585,26 +4110,36 @@ async def farm(
         )
         return
 
-    report_channel = find_channel_by_name(
-        guild,
-        FARM_REPORT_CHANNEL_NAME
+    report_channel = (
+        find_channel_by_name(
+            guild,
+            FARM_REPORT_CHANNEL_NAME
+        )
     )
 
     if report_channel is None:
         await ctx.send(
-            f"❌ Farm report channel not found: "
+            f"❌ Farm report channel "
+            f"not found: "
             f"`{FARM_REPORT_CHANNEL_NAME}`"
         )
         return
 
-    model_name = find_account_by_source_channel(
-        ctx.channel.name
+    model_name = (
+        find_account_by_source_channel(
+            ctx.channel.name
+        )
     )
 
-    chatter_name = ctx.author.display_name
+    chatter_name = (
+        ctx.author.display_name
+    )
 
     farm_embed = discord.Embed(
-        title=f"🌽 {amount.upper()} FARM LOGGED",
+        title=(
+            f"🌽 {amount.upper()} "
+            f"FARM LOGGED"
+        ),
         description=(
             f"👤 **{model_name}** | "
             f"💬 **{chatter_name}** | "
@@ -2615,29 +4150,44 @@ async def farm(
     )
 
     farm_embed.set_footer(
-        text=f"Logged from #{ctx.channel.name}"
+        text=(
+            f"Logged from "
+            f"#{ctx.channel.name}"
+        )
     )
 
     await report_channel.send(
         embed=farm_embed
     )
 
-    confirmation_message = await ctx.send(
-        f"✅ Farm logged for **{model_name}**.\n"
-        f"Make sure to react with ✅ once "
-        f"the notes on the fan are updated."
+    confirmation_message = (
+        await ctx.send(
+            f"✅ Farm logged for "
+            f"**{model_name}**.\n"
+            f"Make sure to react with ✅ "
+            f"once the notes on the fan "
+            f"are updated."
+        )
     )
 
-    for emoji in ["🌽", "✅", "❌"]:
+    for emoji in [
+        "🌽",
+        "✅",
+        "❌"
+    ]:
         try:
             await confirmation_message.add_reaction(
                 emoji
             )
+
         except discord.Forbidden:
             print(
-                f"Missing permission to add reaction "
-                f"{emoji} in #{ctx.channel.name}"
+                f"Missing permission "
+                f"to add reaction "
+                f"{emoji} in "
+                f"#{ctx.channel.name}"
             )
+
         except Exception as e:
             print(
                 f"Failed to add reaction "
@@ -2648,13 +4198,17 @@ async def farm(
 @bot.command()
 async def checkreminders(ctx):
     now = datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
+
+    today = now.strftime(
+        "%Y-%m-%d"
+    )
 
     guild = get_main_guild(ctx)
 
     if guild is None:
         await ctx.send(
-            "❌ Guild not found. GUILD_ID is wrong."
+            "❌ Guild not found. "
+            "GUILD_ID is wrong."
         )
         return
 
@@ -2666,10 +4220,16 @@ async def checkreminders(ctx):
         checked += 1
 
         try:
-            shift_datetime = datetime.strptime(
-                f"{today} {shift['shift_time']}",
-                "%Y-%m-%d %H:%M"
-            ).replace(tzinfo=TZ)
+            shift_datetime = (
+                datetime.strptime(
+                    f"{today} "
+                    f"{shift['shift_time']}",
+                    "%Y-%m-%d %H:%M"
+                ).replace(
+                    tzinfo=TZ
+                )
+            )
+
         except ValueError:
             await ctx.send(
                 f"❌ Invalid shift time: "
@@ -2680,7 +4240,9 @@ async def checkreminders(ctx):
 
         reminder_time = (
             shift_datetime
-            - timedelta(minutes=10)
+            - timedelta(
+                minutes=10
+            )
         )
 
         scheduled_username = (
@@ -2690,11 +4252,14 @@ async def checkreminders(ctx):
         )
 
         channel_name = normalize_name(
-            shift["channel_name"]
+            shift[
+                "channel_name"
+            ]
         )
 
         reminder_key = (
-            f"{guild_id}-{today}-"
+            f"{guild_id}-"
+            f"{today}-"
             f"{shift['account']}-"
             f"{channel_name}-"
             f"{shift['shift_time']}"
@@ -2708,42 +4273,60 @@ async def checkreminders(ctx):
         )
 
         should_warn = (
-            reminder_time <= now < shift_datetime
-            and not someone_clocked_in_for_this_channel
+            reminder_time
+            <= now
+            < shift_datetime
+            and not (
+                someone_clocked_in_for_this_channel
+            )
             and reminder_key
-            not in clock_data["reminded"]
+            not in clock_data[
+                "reminded"
+            ]
         )
 
         print(
             f"MANUAL CHECK | "
             f"account={shift['account']} | "
             f"channel={channel_name} | "
-            f"shift={shift_datetime.strftime('%H:%M')} | "
-            f"now={now.strftime('%H:%M')} | "
-            f"reminder={reminder_time.strftime('%H:%M')} | "
+            f"shift="
+            f"{shift_datetime.strftime('%H:%M')} | "
+            f"now="
+            f"{now.strftime('%H:%M')} | "
+            f"reminder="
+            f"{reminder_time.strftime('%H:%M')} | "
             f"clocked_in="
             f"{someone_clocked_in_for_this_channel} | "
             f"already_reminded="
             f"{reminder_key in clock_data['reminded']} | "
-            f"should_warn={should_warn}"
+            f"should_warn="
+            f"{should_warn}"
         )
 
         if should_warn:
             possible += 1
 
-            channel = find_channel_by_name(
-                guild,
-                channel_name
+            channel = (
+                find_channel_by_name(
+                    guild,
+                    channel_name
+                )
             )
 
-            member = find_member_by_username(
-                guild,
-                scheduled_username
+            member = (
+                find_member_by_username(
+                    guild,
+                    scheduled_username
+                )
             )
 
-            supervisor_role = find_role_by_name(
-                guild,
-                shift["supervisor_role_name"]
+            supervisor_role = (
+                find_role_by_name(
+                    guild,
+                    shift[
+                        "supervisor_role_name"
+                    ]
+                )
             )
 
             if channel is None:
@@ -2762,17 +4345,22 @@ async def checkreminders(ctx):
 
             if supervisor_role is None:
                 await ctx.send(
-                    f"❌ Supervisor role not found: "
+                    f"❌ Supervisor role "
+                    f"not found: "
                     f"`{shift['supervisor_role_name']}`"
                 )
                 continue
 
             await channel.send(
-                f"⏰ {member.mention} your shift starts "
-                f"in **10 minutes** and nobody is "
-                f"clocked in for this account yet.\n\n"
-                f"**Account:** {shift['account']}\n"
-                f"{supervisor_role.mention} please check this."
+                f"⏰ {member.mention} "
+                f"your shift starts in "
+                f"**10 minutes** and nobody "
+                f"is clocked in for this "
+                f"account yet.\n\n"
+                f"**Account:** "
+                f"{shift['account']}\n"
+                f"{supervisor_role.mention} "
+                f"please check this."
             )
 
             clock_data[
@@ -2790,7 +4378,8 @@ async def checkreminders(ctx):
     if possible == 0:
         await ctx.send(
             f"Checked **{checked} shifts**. "
-            f"No reminders are due right now.\n"
+            f"No reminders are due "
+            f"right now.\n"
             f"Current bot time: "
             f"**{now.strftime('%H:%M')}**"
         )
@@ -2799,22 +4388,32 @@ async def checkreminders(ctx):
 @tasks.loop(minutes=1)
 async def shift_reminder_loop():
     now = datetime.now(TZ)
-    today = now.strftime("%Y-%m-%d")
+
+    today = now.strftime(
+        "%Y-%m-%d"
+    )
 
     guild = get_main_guild()
 
     if guild is None:
-        print("Guild not found.")
+        print(
+            "Guild not found."
+        )
         return
 
     guild_id = guild.id
 
     for shift in schedule_cache:
         try:
-            shift_datetime = datetime.strptime(
-                f"{today} {shift['shift_time']}",
-                "%Y-%m-%d %H:%M"
-            ).replace(tzinfo=TZ)
+            shift_datetime = (
+                datetime.strptime(
+                    f"{today} "
+                    f"{shift['shift_time']}",
+                    "%Y-%m-%d %H:%M"
+                ).replace(
+                    tzinfo=TZ
+                )
+            )
 
         except ValueError:
             print(
@@ -2826,13 +4425,17 @@ async def shift_reminder_loop():
 
         reminder_time = (
             shift_datetime
-            - timedelta(minutes=10)
+            - timedelta(
+                minutes=10
+            )
         )
 
         no_clockin_alert_time = (
             shift_datetime
             + timedelta(
-                minutes=NO_CLOCKIN_ALERT_AFTER_MINUTES
+                minutes=(
+                    NO_CLOCKIN_ALERT_AFTER_MINUTES
+                )
             )
         )
 
@@ -2853,18 +4456,22 @@ async def shift_reminder_loop():
         )
 
         channel_name = normalize_name(
-            shift["channel_name"]
+            shift[
+                "channel_name"
+            ]
         )
 
         reminder_key = (
-            f"{guild_id}-{today}-"
+            f"{guild_id}-"
+            f"{today}-"
             f"{shift['account']}-"
             f"{channel_name}-"
             f"{shift['shift_time']}"
         )
 
         no_clockin_alert_key = (
-            f"{guild_id}-{today}-"
+            f"{guild_id}-"
+            f"{today}-"
             f"{shift['account']}-"
             f"{channel_name}-"
             f"{shift['shift_time']}-"
@@ -2879,17 +4486,25 @@ async def shift_reminder_loop():
         )
 
         should_warn = (
-            reminder_time <= now < shift_datetime
-            and not someone_clocked_in_for_this_channel
+            reminder_time
+            <= now
+            < shift_datetime
+            and not (
+                someone_clocked_in_for_this_channel
+            )
             and reminder_key
-            not in clock_data["reminded"]
+            not in clock_data[
+                "reminded"
+            ]
         )
 
         should_send_no_clockin_alert = (
             no_clockin_alert_time
             <= now
             <= no_clockin_alert_window_end
-            and not someone_clocked_in_for_this_channel
+            and not (
+                someone_clocked_in_for_this_channel
+            )
             and no_clockin_alert_key
             not in clock_data[
                 "no_clockin_alerts"
@@ -2900,9 +4515,12 @@ async def shift_reminder_loop():
             f"CHECK | "
             f"account={shift['account']} | "
             f"channel={channel_name} | "
-            f"shift={shift_datetime.strftime('%H:%M')} | "
-            f"now={now.strftime('%H:%M')} | "
-            f"reminder={reminder_time.strftime('%H:%M')} | "
+            f"shift="
+            f"{shift_datetime.strftime('%H:%M')} | "
+            f"now="
+            f"{now.strftime('%H:%M')} | "
+            f"reminder="
+            f"{reminder_time.strftime('%H:%M')} | "
             f"no_clockin_alert="
             f"{no_clockin_alert_time.strftime('%H:%M')} | "
             f"no_clockin_window_end="
@@ -2913,7 +4531,8 @@ async def shift_reminder_loop():
             f"{reminder_key in clock_data['reminded']} | "
             f"already_no_clockin_alert="
             f"{no_clockin_alert_key in clock_data['no_clockin_alerts']} | "
-            f"should_warn={should_warn} | "
+            f"should_warn="
+            f"{should_warn} | "
             f"should_send_no_clockin_alert="
             f"{should_send_no_clockin_alert}"
         )
@@ -2926,19 +4545,27 @@ async def shift_reminder_loop():
                 f"{scheduled_username}"
             )
 
-            channel = find_channel_by_name(
-                guild,
-                channel_name
+            channel = (
+                find_channel_by_name(
+                    guild,
+                    channel_name
+                )
             )
 
-            member = find_member_by_username(
-                guild,
-                scheduled_username
+            member = (
+                find_member_by_username(
+                    guild,
+                    scheduled_username
+                )
             )
 
-            supervisor_role = find_role_by_name(
-                guild,
-                shift["supervisor_role_name"]
+            supervisor_role = (
+                find_role_by_name(
+                    guild,
+                    shift[
+                        "supervisor_role_name"
+                    ]
+                )
             )
 
             if channel is None:
@@ -2963,11 +4590,15 @@ async def shift_reminder_loop():
                 continue
 
             await channel.send(
-                f"⏰ {member.mention} your shift starts "
-                f"in **10 minutes** and nobody is "
-                f"clocked in for this account yet.\n\n"
-                f"**Account:** {shift['account']}\n"
-                f"{supervisor_role.mention} please check this."
+                f"⏰ {member.mention} "
+                f"your shift starts in "
+                f"**10 minutes** and nobody "
+                f"is clocked in for this "
+                f"account yet.\n\n"
+                f"**Account:** "
+                f"{shift['account']}\n"
+                f"{supervisor_role.mention} "
+                f"please check this."
             )
 
             clock_data[
@@ -2984,14 +4615,20 @@ async def shift_reminder_loop():
                 f"{scheduled_username}"
             )
 
-            channel = find_channel_by_name(
-                guild,
-                channel_name
+            channel = (
+                find_channel_by_name(
+                    guild,
+                    channel_name
+                )
             )
 
-            supervisor_role = find_role_by_name(
-                guild,
-                shift["supervisor_role_name"]
+            supervisor_role = (
+                find_role_by_name(
+                    guild,
+                    shift[
+                        "supervisor_role_name"
+                    ]
+                )
             )
 
             if channel is None:
@@ -3012,7 +4649,8 @@ async def shift_reminder_loop():
 
             if supervisor_role is not None:
                 supervisor_text = (
-                    f"\n{supervisor_role.mention} "
+                    f"\n"
+                    f"{supervisor_role.mention} "
                     f"please check coverage."
                 )
 
