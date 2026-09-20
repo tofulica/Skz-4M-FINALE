@@ -24,6 +24,7 @@ except ValueError:
 SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")
 FARM_REPORT_CHANNEL_NAME = (os.getenv("FARM_REPORT_CHANNEL_NAME") or "farms").strip().lower().replace("#", "")
 CONTENT_REQUEST_CHANNEL_NAME = (os.getenv("CONTENT_REQUEST_CHANNEL_NAME") or "content-requests").strip().lower().replace("#", "")
+APPROVAL_CHANNEL_NAME = (os.getenv("APPROVAL_CHANNEL_NAME") or "approvals").strip().lower().replace("#", "")
 
 TZ = ZoneInfo("Europe/Berlin")
 
@@ -52,7 +53,8 @@ def load_clock_data():
             "no_clockin_alerts": {},
             "clocked_in_channels": {},
             "announcement_batches": [],
-            "streaks": {}
+            "streaks": {},
+            "mma_requests": {}
         }
 
     with open(DATA_FILE, "r") as f:
@@ -72,6 +74,9 @@ def load_clock_data():
 
     if "streaks" not in data:
         data["streaks"] = {}
+
+    if "mma_requests" not in data:
+        data["mma_requests"] = {}
 
     for channel_name, value in list(data["clocked_in_channels"].items()):
         if isinstance(value, dict):
@@ -682,14 +687,287 @@ async def delete_saved_batch_messages(ctx, batch, label="announcement"):
     await ctx.send(reply)
 
 
+def create_mma_request_id():
+    return datetime.now(TZ).strftime("%Y%m%d-%H%M%S-%f")
+
+
+def get_mma_request(request_id):
+    return clock_data.get("mma_requests", {}).get(request_id)
+
+
+def build_mma_embed(request_data):
+    status = request_data.get("status", "pending")
+
+    if status == "approved":
+        color = discord.Color.green()
+        status_text = "✅ APPROVED"
+    elif status == "declined":
+        color = discord.Color.red()
+        status_text = "❌ DECLINED"
+    else:
+        color = discord.Color.orange()
+        status_text = "⏳ PENDING APPROVAL"
+
+    mass_message = request_data.get("mass_message", "")
+
+    embed = discord.Embed(
+        title="📨 Mass Message Approval",
+        description=mass_message,
+        color=color,
+        timestamp=datetime.now(TZ)
+    )
+
+    model_name = request_data.get("model_name")
+
+    if model_name:
+        embed.add_field(
+            name="Model",
+            value=model_name,
+            inline=True
+        )
+
+    embed.add_field(
+        name="Submitted by",
+        value=f"<@{request_data.get('requester_id')}>",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Source",
+        value=f"<#{request_data.get('source_channel_id')}>",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Status",
+        value=status_text,
+        inline=True
+    )
+
+    attachments = request_data.get("attachments", [])
+
+    if attachments:
+        attachment_lines = []
+
+        for index, attachment_url in enumerate(attachments, start=1):
+            attachment_lines.append(
+                f"[Attachment {index}]({attachment_url})"
+            )
+
+        attachment_text = "\n".join(attachment_lines)
+
+        if len(attachment_text) > 1024:
+            attachment_text = attachment_text[:1000] + "..."
+
+        embed.add_field(
+            name="Attachments",
+            value=attachment_text,
+            inline=False
+        )
+
+    if status in ["approved", "declined"]:
+        decided_by = request_data.get("decided_by")
+        decided_at = request_data.get("decided_at")
+
+        if decided_by:
+            embed.add_field(
+                name="Reviewed by",
+                value=f"<@{decided_by}>",
+                inline=True
+            )
+
+        if decided_at:
+            embed.add_field(
+                name="Reviewed at",
+                value=decided_at,
+                inline=True
+            )
+
+    embed.set_footer(
+        text=f"Approval ID: {request_data.get('request_id', 'unknown')}"
+    )
+
+    return embed
+
+
+async def get_channel_from_id(channel_id):
+    if not channel_id:
+        return None
+
+    try:
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
+        return None
+
+    channel = bot.get_channel(channel_id)
+
+    if channel is not None:
+        return channel
+
+    try:
+        return await bot.fetch_channel(channel_id)
+    except Exception as e:
+        print(f"Could not fetch channel {channel_id}: {e}")
+        return None
+
+
+async def handle_mma_decision(interaction, request_id, decision):
+    request_data = get_mma_request(request_id)
+
+    if request_data is None:
+        await interaction.response.send_message(
+            "❌ This approval request no longer exists.",
+            ephemeral=True
+        )
+        return
+
+    current_status = request_data.get("status", "pending")
+
+    if current_status != "pending":
+        await interaction.response.send_message(
+            f"⚠️ This mass message has already been **{current_status}**.",
+            ephemeral=True
+        )
+        return
+
+    if decision == "approved":
+        request_data["status"] = "approved"
+    else:
+        request_data["status"] = "declined"
+
+    request_data["decided_by"] = str(interaction.user.id)
+    request_data["decided_by_name"] = interaction.user.display_name
+    request_data["decided_at"] = datetime.now(TZ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    save_clock_data()
+
+    disabled_view = MMAApprovalView(
+        request_id=request_id,
+        disabled=True
+    )
+
+    embed = build_mma_embed(request_data)
+
+    await interaction.response.edit_message(
+        embed=embed,
+        view=disabled_view
+    )
+
+    source_channel = await get_channel_from_id(
+        request_data.get("source_channel_id")
+    )
+
+    if source_channel is None:
+        print(
+            f"MMA RESULT ERROR | Could not find source channel "
+            f"{request_data.get('source_channel_id')} for request {request_id}"
+        )
+        return
+
+    requester_id = request_data.get("requester_id")
+    mass_message = request_data.get("mass_message", "")
+
+    preview = mass_message
+
+    if len(preview) > 1200:
+        preview = preview[:1200] + "..."
+
+    quoted_preview = preview.replace("\n", "\n> ")
+
+    if decision == "approved":
+        result_text = (
+            f"✅ <@{requester_id}> your mass message has been **APPROVED** "
+            f"by {interaction.user.mention}.\n\n"
+            f"**Mass Message:**\n"
+            f"> {quoted_preview}"
+        )
+    else:
+        result_text = (
+            f"❌ <@{requester_id}> your mass message has been **DECLINED** "
+            f"by {interaction.user.mention}.\n\n"
+            f"**Mass Message:**\n"
+            f"> {quoted_preview}"
+        )
+
+    await source_channel.send(result_text)
+
+
+class MMAApprovalView(discord.ui.View):
+    def __init__(self, request_id, disabled=False):
+        super().__init__(timeout=None)
+
+        self.request_id = request_id
+
+        approve_button = discord.ui.Button(
+            label="Approve",
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            custom_id=f"mma_approve_{request_id}",
+            disabled=disabled
+        )
+
+        decline_button = discord.ui.Button(
+            label="Decline",
+            emoji="❌",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"mma_decline_{request_id}",
+            disabled=disabled
+        )
+
+        approve_button.callback = self.approve_callback
+        decline_button.callback = self.decline_callback
+
+        self.add_item(approve_button)
+        self.add_item(decline_button)
+
+    async def approve_callback(self, interaction):
+        await handle_mma_decision(
+            interaction,
+            self.request_id,
+            "approved"
+        )
+
+    async def decline_callback(self, interaction):
+        await handle_mma_decision(
+            interaction,
+            self.request_id,
+            "declined"
+        )
+
+
+mma_views_registered = False
+
+
 @bot.event
 async def on_ready():
     global schedule_cache
+    global mma_views_registered
 
     schedule_cache = load_schedule_from_csv()
 
     if not shift_reminder_loop.is_running():
         shift_reminder_loop.start()
+
+    if not mma_views_registered:
+        pending_count = 0
+
+        for request_id, request_data in clock_data.get(
+            "mma_requests",
+            {}
+        ).items():
+            if request_data.get("status") == "pending":
+                bot.add_view(
+                    MMAApprovalView(request_id)
+                )
+                pending_count += 1
+
+        mma_views_registered = True
+
+        print(
+            f"Registered {pending_count} pending MMA approval views."
+        )
 
     print(f"Logged in as {bot.user}")
     print(f"Loaded {len(schedule_cache)} shifts.")
@@ -697,6 +975,7 @@ async def on_ready():
     print(f"Streak shift times: {', '.join(STREAK_SHIFT_TIMES)}")
 
     print("Servers bot can see:")
+
     for guild in bot.guilds:
         print(f"- {guild.name} | {guild.id}")
 
@@ -706,7 +985,9 @@ async def ci(ctx):
     current_channel_name = normalize_name(ctx.channel.name)
 
     if "clock" not in current_channel_name:
-        await ctx.send("❌ Clock-ins must be submitted in the model's **clock-in** channel.")
+        await ctx.send(
+            "❌ Clock-ins must be submitted in the model's **clock-in** channel."
+        )
         return
 
     user_id = str(ctx.author.id)
@@ -737,14 +1018,21 @@ async def ci(ctx):
         "guild_id": str(guild_id) if guild_id else None
     })
 
-    streak, streak_status = update_streak_for_clockin(ctx.author, channel_name, guild_id)
+    streak, streak_status = update_streak_for_clockin(
+        ctx.author,
+        channel_name,
+        guild_id
+    )
 
     save_clock_data()
 
     await ctx.message.add_reaction("✅")
 
     if streak_status == "reset_late":
-        await ctx.send(f"🔥 Streak {streak} - your streak has been reset because of a late clock-in")
+        await ctx.send(
+            f"🔥 Streak {streak} - your streak has been reset because "
+            f"of a late clock-in"
+        )
     else:
         await ctx.send(f"🔥 Streak {streak}")
 
@@ -754,14 +1042,19 @@ async def co(ctx):
     current_channel_name = normalize_name(ctx.channel.name)
 
     if "clock" not in current_channel_name:
-        await ctx.send("❌ Clock-outs must be submitted in the model's **clock-in** channel.")
+        await ctx.send(
+            "❌ Clock-outs must be submitted in the model's **clock-in** channel."
+        )
         return
 
     user_id = str(ctx.author.id)
     username = ctx.author.name.lower()
     channel_name = normalize_name(ctx.channel.name)
     guild_id = ctx.guild.id if ctx.guild else None
-    channel_key = get_channel_storage_key_for_checkout(guild_id, channel_name)
+    channel_key = get_channel_storage_key_for_checkout(
+        guild_id,
+        channel_name
+    )
     now = datetime.now(TZ)
 
     if channel_key not in clock_data["clocked_in_channels"]:
@@ -789,7 +1082,9 @@ async def co(ctx):
 
     duration = now - start
 
-    clock_data["clocked_in_channels"][channel_key].remove(user_clockin)
+    clock_data["clocked_in_channels"][channel_key].remove(
+        user_clockin
+    )
 
     if not clock_data["clocked_in_channels"][channel_key]:
         del clock_data["clocked_in_channels"][channel_key]
@@ -811,33 +1106,58 @@ async def co(ctx):
 @bot.command()
 async def status(ctx):
     if not clock_data["clocked_in_channels"]:
-        await ctx.send("Nobody is currently clocked in on any account.")
+        await ctx.send(
+            "Nobody is currently clocked in on any account."
+        )
         return
 
     current_guild_id = str(ctx.guild.id) if ctx.guild else None
     msg = "**Currently clocked in by account/channel:**\n"
     shown_any = False
 
-    for channel_key, clockins in clock_data["clocked_in_channels"].items():
-        if current_guild_id and ":" in channel_key and not channel_key.startswith(f"{current_guild_id}:"):
+    for channel_key, clockins in clock_data[
+        "clocked_in_channels"
+    ].items():
+
+        if (
+            current_guild_id
+            and ":" in channel_key
+            and not channel_key.startswith(
+                f"{current_guild_id}:"
+            )
+        ):
             continue
 
-        display_channel_name = get_channel_name_from_key(channel_key)
+        display_channel_name = get_channel_name_from_key(
+            channel_key
+        )
 
         if clockins:
-            display_channel_name = clockins[0].get("channel_name", display_channel_name)
+            display_channel_name = clockins[0].get(
+                "channel_name",
+                display_channel_name
+            )
 
         msg += f"\n**{display_channel_name}**\n"
 
         for clockin in clockins:
-            name = clockin.get("display_name") or clockin.get("username", "unknown")
-            time = clockin.get("time", "unknown time")
+            name = (
+                clockin.get("display_name")
+                or clockin.get("username", "unknown")
+            )
+
+            time = clockin.get(
+                "time",
+                "unknown time"
+            )
 
             msg += f"- {name} since **{time}**\n"
             shown_any = True
 
     if not shown_any:
-        await ctx.send("Nobody is currently clocked in on this server.")
+        await ctx.send(
+            "Nobody is currently clocked in on this server."
+        )
         return
 
     for chunk in sendable_chunks(msg):
@@ -849,11 +1169,15 @@ async def allstatus(ctx):
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
     if not schedule_cache:
-        await ctx.send("❌ Schedule is empty. Use `!reloadschedule` first.")
+        await ctx.send(
+            "❌ Schedule is empty. Use `!reloadschedule` first."
+        )
         return
 
     guild_id = guild.id
@@ -861,25 +1185,44 @@ async def allstatus(ctx):
     seen_channels = set()
 
     for shift in schedule_cache:
-        channel_name = normalize_name(shift.get("channel_name"))
+        channel_name = normalize_name(
+            shift.get("channel_name")
+        )
 
         if not channel_name or channel_name in seen_channels:
             continue
 
         seen_channels.add(channel_name)
+
         unique_channels.append({
-            "account": shift.get("account", "Unknown Model"),
+            "account": shift.get(
+                "account",
+                "Unknown Model"
+            ),
             "channel_name": channel_name
         })
 
     now_text = datetime.now(TZ).strftime("%H:%M")
-    msg = f"**📊 All Model Status** — `{now_text}`\n"
-    msg += "_15 minutes before the next shift, old clock-ins from the previous shift do not count here._\n\n"
+
+    msg = (
+        f"**📊 All Model Status** — `{now_text}`\n"
+    )
+
+    msg += (
+        "_15 minutes before the next shift, old clock-ins "
+        "from the previous shift do not count here._\n\n"
+    )
 
     for item in unique_channels:
         account = item["account"]
         channel_name = item["channel_name"]
-        valid_clockins, target_shift = get_allstatus_valid_clockins(guild_id, channel_name)
+
+        valid_clockins, target_shift = (
+            get_allstatus_valid_clockins(
+                guild_id,
+                channel_name
+            )
+        )
 
         if target_shift is not None:
             shift_text = target_shift.strftime("%H:%M")
@@ -890,14 +1233,40 @@ async def allstatus(ctx):
             names = []
 
             for clockin in valid_clockins:
-                name = clockin.get("display_name") or clockin.get("username", "unknown")
-                clockin_time = clockin.get("time", "unknown time")
-                names.append(f"{name} since `{clockin_time}`")
+                name = (
+                    clockin.get("display_name")
+                    or clockin.get(
+                        "username",
+                        "unknown"
+                    )
+                )
 
-            msg += f"✅ **{account}** (`#{channel_name}` / shift `{shift_text}`)\n"
-            msg += "   " + "; ".join(names) + "\n"
+                clockin_time = clockin.get(
+                    "time",
+                    "unknown time"
+                )
+
+                names.append(
+                    f"{name} since `{clockin_time}`"
+                )
+
+            msg += (
+                f"✅ **{account}** "
+                f"(`#{channel_name}` / shift `{shift_text}`)\n"
+            )
+
+            msg += (
+                "   "
+                + "; ".join(names)
+                + "\n"
+            )
+
         else:
-            msg += f"❌ **{account}** (`#{channel_name}` / shift `{shift_text}`) — nobody ready for this shift\n"
+            msg += (
+                f"❌ **{account}** "
+                f"(`#{channel_name}` / shift `{shift_text}`) "
+                f"— nobody ready for this shift\n"
+            )
 
     for chunk in sendable_chunks(msg):
         await ctx.send(chunk)
@@ -908,124 +1277,204 @@ async def reloadschedule(ctx):
     global schedule_cache
 
     schedule_cache = load_schedule_from_csv()
+
     clock_data["reminded"] = {}
     clock_data["no_clockin_alerts"] = {}
+
     save_clock_data()
 
     await ctx.send(
-        f"✅ Schedule reloaded and reminders reset. Shifts loaded: **{len(schedule_cache)}**"
+        f"✅ Schedule reloaded and reminders reset. "
+        f"Shifts loaded: **{len(schedule_cache)}**"
     )
 
 
 @bot.command(name="setstreak")
 async def setstreak(ctx, *, args: str = None):
     if not can_manage_streaks(ctx.author):
-        await ctx.send("❌ You don't have permission to set streaks.")
+        await ctx.send(
+            "❌ You don't have permission to set streaks."
+        )
         return
 
     if not args:
-        await ctx.send("Use it like this: `!setstreak username 12`")
+        await ctx.send(
+            "Use it like this: `!setstreak username 12`"
+        )
         return
 
     try:
         user_identifier, streak_text = args.rsplit(" ", 1)
         streak_value = int(streak_text)
     except ValueError:
-        await ctx.send("Use it like this: `!setstreak username 12`")
+        await ctx.send(
+            "Use it like this: `!setstreak username 12`"
+        )
         return
 
     if streak_value < 0:
-        await ctx.send("❌ Streak cannot be negative.")
+        await ctx.send(
+            "❌ Streak cannot be negative."
+        )
         return
 
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
-    member = find_member_by_identifier(guild, user_identifier)
+    member = find_member_by_identifier(
+        guild,
+        user_identifier
+    )
 
     if member is None:
-        await ctx.send("❌ User not found. Use their Discord username, display name, mention, or Discord ID.")
+        await ctx.send(
+            "❌ User not found. Use their Discord username, "
+            "display name, mention, or Discord ID."
+        )
         return
 
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
-    now_text = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+    today = datetime.now(TZ).strftime(
+        "%Y-%m-%d"
+    )
+
+    now_text = datetime.now(TZ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
     streak_data = get_or_create_streak_data(member)
 
-    old_streak = streak_data.get("streak", 0)
-    last_clockin_channel_name = streak_data.get("last_clockin_channel")
-    last_clockin_guild_id = streak_data.get("last_clockin_guild_id")
+    old_streak = streak_data.get(
+        "streak",
+        0
+    )
+
+    last_clockin_channel_name = streak_data.get(
+        "last_clockin_channel"
+    )
+
+    last_clockin_guild_id = streak_data.get(
+        "last_clockin_guild_id"
+    )
 
     streak_data["streak"] = streak_value
     streak_data["last_counted_date"] = today
     streak_data["last_reset_date"] = None
     streak_data["first_clockin_date"] = today
     streak_data["first_clockin_status"] = "manual_set"
-    streak_data["first_clockin_channel"] = f"manual:{ctx.channel.name}"
+    streak_data["first_clockin_channel"] = (
+        f"manual:{ctx.channel.name}"
+    )
     streak_data["first_clockin_time"] = now_text
     streak_data["manual_set_date"] = now_text
     streak_data["manual_set_by"] = ctx.author.name
-    streak_data["manual_set_channel"] = ctx.channel.name
+    streak_data["manual_set_channel"] = (
+        ctx.channel.name
+    )
 
     save_clock_data()
 
     await ctx.send(
-        f"✅ Streak for **{member.display_name}** has been set from **{old_streak}** to **{streak_value}**."
+        f"✅ Streak for **{member.display_name}** "
+        f"has been set from **{old_streak}** "
+        f"to **{streak_value}**."
     )
 
     notification_guild = guild
 
-    if last_clockin_guild_id and str(last_clockin_guild_id).isdigit():
-        saved_guild = bot.get_guild(int(last_clockin_guild_id))
+    if (
+        last_clockin_guild_id
+        and str(last_clockin_guild_id).isdigit()
+    ):
+        saved_guild = bot.get_guild(
+            int(last_clockin_guild_id)
+        )
+
         if saved_guild is not None:
             notification_guild = saved_guild
 
     if last_clockin_channel_name:
-        last_clockin_channel = find_channel_by_name(notification_guild, last_clockin_channel_name)
+        last_clockin_channel = find_channel_by_name(
+            notification_guild,
+            last_clockin_channel_name
+        )
 
         if last_clockin_channel is not None:
             await last_clockin_channel.send(
-                f"🔥 Streak update for **{member.display_name}**: "
-                f"your streak has been set to **{streak_value}**."
+                f"🔥 Streak update for "
+                f"**{member.display_name}**: "
+                f"your streak has been set to "
+                f"**{streak_value}**."
             )
+
         else:
             await ctx.send(
-                f"⚠️ Streak was set, but I could not find the last clock-in channel: `{last_clockin_channel_name}`"
+                f"⚠️ Streak was set, but I could not find "
+                f"the last clock-in channel: "
+                f"`{last_clockin_channel_name}`"
             )
+
     else:
         await ctx.send(
-            "⚠️ Streak was set, but this user has no saved last clock-in channel yet."
+            "⚠️ Streak was set, but this user has no saved "
+            "last clock-in channel yet."
         )
 
 
-@bot.command(name="contentrequest", aliases=["cr", "needcontent"])
-async def contentrequest(ctx, *, request_text: str = None):
-    current_channel_name = normalize_name(ctx.channel.name)
+@bot.command(
+    name="contentrequest",
+    aliases=["cr", "needcontent"]
+)
+async def contentrequest(
+    ctx,
+    *,
+    request_text: str = None
+):
+    current_channel_name = normalize_name(
+        ctx.channel.name
+    )
 
     if "customs" not in current_channel_name:
-        await ctx.send("❌ Content requests must be submitted in the model's **customs** channel.")
+        await ctx.send(
+            "❌ Content requests must be submitted in "
+            "the model's **customs** channel."
+        )
         return
 
     if not request_text:
-        await ctx.send("Use it like this: `!contentrequest need new SFW selfies for wall`")
+        await ctx.send(
+            "Use it like this: "
+            "`!contentrequest need new SFW selfies for wall`"
+        )
         return
 
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
-    content_channel = find_channel_by_name(guild, CONTENT_REQUEST_CHANNEL_NAME)
+    content_channel = find_channel_by_name(
+        guild,
+        CONTENT_REQUEST_CHANNEL_NAME
+    )
 
     if content_channel is None:
-        await ctx.send(f"❌ Content request channel not found: `{CONTENT_REQUEST_CHANNEL_NAME}`")
+        await ctx.send(
+            f"❌ Content request channel not found: "
+            f"`{CONTENT_REQUEST_CHANNEL_NAME}`"
+        )
         return
 
-    model_name = find_account_by_source_channel(ctx.channel.name)
+    model_name = find_account_by_source_channel(
+        ctx.channel.name
+    )
 
     content_embed = discord.Embed(
         title="📸 Content Request",
@@ -1063,31 +1512,188 @@ async def contentrequest(ctx, *, request_text: str = None):
         inline=False
     )
 
-    sent_message = await content_channel.send(embed=content_embed)
+    sent_message = await content_channel.send(
+        embed=content_embed
+    )
 
     for emoji in ["👀", "✅", "❌"]:
         try:
             await sent_message.add_reaction(emoji)
         except Exception as e:
-            print(f"Failed to add content request reaction {emoji}: {e}")
+            print(
+                f"Failed to add content request "
+                f"reaction {emoji}: {e}"
+            )
 
     await ctx.message.add_reaction("✅")
-    await ctx.send(f"✅ Content request sent for **{model_name}")
+
+    await ctx.send(
+        f"✅ Content request sent for **{model_name}**"
+    )
 
 
-@bot.command()
-async def announcement(ctx, *, message: str = None):
-    if not message:
-        await ctx.send("Please write the announcement after the command.")
+@bot.command(name="mma")
+async def mma(
+    ctx,
+    *,
+    mass_message: str = None
+):
+    current_channel_name = normalize_name(
+        ctx.channel.name
+    )
+
+    if "approval" not in current_channel_name:
+        await ctx.send(
+            "❌ Mass message approvals must be submitted "
+            "in a channel that has **approval** in its name."
+        )
+        return
+
+    if not mass_message:
+        await ctx.send(
+            "Use it like this:\n"
+            "`!mma your mass message here`"
+        )
+        return
+
+    if len(mass_message) > 4000:
+        await ctx.send(
+            "❌ Mass message is too long for "
+            "the approval system."
+        )
         return
 
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
-    announcement_channels = get_unique_announcement_channels()
+    approval_channel = find_channel_by_name(
+        guild,
+        APPROVAL_CHANNEL_NAME
+    )
+
+    if approval_channel is None:
+        await ctx.send(
+            f"❌ Approval channel not found: "
+            f"`#{APPROVAL_CHANNEL_NAME}`"
+        )
+        return
+
+    request_id = create_mma_request_id()
+
+    attachments = [
+        attachment.url
+        for attachment in ctx.message.attachments
+    ]
+
+    model_name = find_account_by_source_channel(
+        ctx.channel.name
+    )
+
+    request_data = {
+        "request_id": request_id,
+        "requester_id": str(ctx.author.id),
+        "requester_name": ctx.author.display_name,
+        "guild_id": str(guild.id),
+        "source_channel_id": str(ctx.channel.id),
+        "source_channel_name": ctx.channel.name,
+        "source_message_id": str(ctx.message.id),
+        "model_name": model_name,
+        "mass_message": mass_message,
+        "attachments": attachments,
+        "status": "pending",
+        "submitted_at": datetime.now(TZ).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "approval_channel_id": str(
+            approval_channel.id
+        ),
+        "approval_message_id": None,
+        "decided_by": None,
+        "decided_by_name": None,
+        "decided_at": None
+    }
+
+    if "mma_requests" not in clock_data:
+        clock_data["mma_requests"] = {}
+
+    clock_data["mma_requests"][
+        request_id
+    ] = request_data
+
+    save_clock_data()
+
+    embed = build_mma_embed(request_data)
+    view = MMAApprovalView(request_id)
+
+    try:
+        approval_message = (
+            await approval_channel.send(
+                embed=embed,
+                view=view
+            )
+        )
+
+        request_data[
+            "approval_message_id"
+        ] = str(approval_message.id)
+
+        save_clock_data()
+
+    except Exception as e:
+        print(
+            f"Failed to send MMA approval: {e}"
+        )
+
+        clock_data["mma_requests"].pop(
+            request_id,
+            None
+        )
+
+        save_clock_data()
+
+        await ctx.send(
+            "❌ Failed to send the mass message "
+            "for approval."
+        )
+        return
+
+    await ctx.message.add_reaction("✅")
+
+    await ctx.send(
+        f"📨 {ctx.author.mention} your mass message "
+        f"has been sent for approval."
+    )
+
+
+@bot.command()
+async def announcement(
+    ctx,
+    *,
+    message: str = None
+):
+    if not message:
+        await ctx.send(
+            "Please write the announcement "
+            "after the command."
+        )
+        return
+
+    guild = get_main_guild(ctx)
+
+    if guild is None:
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
+        return
+
+    announcement_channels = (
+        get_unique_announcement_channels()
+    )
 
     if not announcement_channels:
         await ctx.send(
@@ -1098,10 +1704,15 @@ async def announcement(ctx, *, message: str = None):
 
     batch_id = create_announcement_batch_id()
 
-    announcement_text = f"📢 **ANNOUNCEMENT**\n\n{message}"
+    announcement_text = (
+        f"📢 **ANNOUNCEMENT**\n\n{message}"
+    )
 
     if len(announcement_text) > 2000:
-        await ctx.send("❌ Announcement is too long. Discord limit is 2000 characters.")
+        await ctx.send(
+            "❌ Announcement is too long. "
+            "Discord limit is 2000 characters."
+        )
         return
 
     sent_channels = []
@@ -1109,14 +1720,19 @@ async def announcement(ctx, *, message: str = None):
     sent_messages = []
 
     for channel_name in announcement_channels:
-        channel = find_channel_by_name(guild, channel_name)
+        channel = find_channel_by_name(
+            guild,
+            channel_name
+        )
 
         if channel is None:
             failed_channels.append(channel_name)
             continue
 
         try:
-            sent_message = await channel.send(announcement_text)
+            sent_message = await channel.send(
+                announcement_text
+            )
 
             sent_channels.append(channel_name)
 
@@ -1127,13 +1743,21 @@ async def announcement(ctx, *, message: str = None):
             })
 
         except Exception as e:
-            print(f"Failed to send announcement to {channel_name}: {e}")
-            failed_channels.append(channel_name)
+            print(
+                f"Failed to send announcement "
+                f"to {channel_name}: {e}"
+            )
+
+            failed_channels.append(
+                channel_name
+            )
 
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": datetime.now(TZ).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
             "created_by": ctx.author.name,
             "text_preview": message[:150],
             "messages": sent_messages,
@@ -1141,52 +1765,102 @@ async def announcement(ctx, *, message: str = None):
             "type": "announcement"
         }
 
-        clock_data["announcement_batches"].append(batch)
-        clock_data["announcement_batches"] = clock_data["announcement_batches"][-50:]
+        clock_data[
+            "announcement_batches"
+        ].append(batch)
+
+        clock_data[
+            "announcement_batches"
+        ] = clock_data[
+            "announcement_batches"
+        ][-50:]
 
         save_clock_data()
 
     reply = ""
 
     if sent_channels:
-        reply += f"✅ Announcement sent to **{len(sent_channels)}** channels.\n\n"
-        reply += f"**Batch ID:** `{batch_id}`\n\n"
-        reply += "To delete this announcement:\n"
-        reply += f"`!deleteannouncement {batch_id}`\n"
+        reply += (
+            f"✅ Announcement sent to "
+            f"**{len(sent_channels)}** channels.\n\n"
+        )
+
+        reply += (
+            f"**Batch ID:** `{batch_id}`\n\n"
+        )
+
+        reply += (
+            "To delete this announcement:\n"
+        )
+
+        reply += (
+            f"`!deleteannouncement {batch_id}`\n"
+        )
+
         reply += "or\n"
         reply += "`!deleteannouncement latest`\n\n"
         reply += "**Sent to:**\n"
-        reply += "\n".join([f"- #{name}" for name in sent_channels])
+
+        reply += "\n".join(
+            [
+                f"- #{name}"
+                for name in sent_channels
+            ]
+        )
 
     if failed_channels:
         if reply:
             reply += "\n\n"
 
         reply += "❌ Failed / not found:\n"
-        reply += "\n".join([f"- #{name}" for name in failed_channels])
+
+        reply += "\n".join(
+            [
+                f"- #{name}"
+                for name in failed_channels
+            ]
+        )
 
     if not reply:
-        reply = "❌ Announcement was not sent to any channel."
+        reply = (
+            "❌ Announcement was not sent "
+            "to any channel."
+        )
 
     await ctx.send(reply)
 
 
 @bot.command(name="rules")
-async def rules(ctx, *, message: str = None):
+async def rules(
+    ctx,
+    *,
+    message: str = None
+):
     if not message:
-        await ctx.send("Please write the rules message after the command.")
+        await ctx.send(
+            "Please write the rules message "
+            "after the command."
+        )
         return
 
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
-    rules_channels = get_unique_rules_channels(guild)
+    rules_channels = get_unique_rules_channels(
+        guild
+    )
 
     if not rules_channels:
-        await ctx.send("❌ No rules channels found. Make sure model rules channels have `rules` in the channel name.")
+        await ctx.send(
+            "❌ No rules channels found. "
+            "Make sure model rules channels have "
+            "`rules` in the channel name."
+        )
         return
 
     batch_id = create_announcement_batch_id()
@@ -1194,7 +1868,10 @@ async def rules(ctx, *, message: str = None):
     rules_text = message
 
     if len(rules_text) > 2000:
-        await ctx.send("❌ Rules message is too long. Discord limit is 2000 characters.")
+        await ctx.send(
+            "❌ Rules message is too long. "
+            "Discord limit is 2000 characters."
+        )
         return
 
     sent_channels = []
@@ -1202,16 +1879,25 @@ async def rules(ctx, *, message: str = None):
     sent_messages = []
 
     for channel_name in rules_channels:
-        channel = find_channel_by_name(guild, channel_name)
+        channel = find_channel_by_name(
+            guild,
+            channel_name
+        )
 
         if channel is None:
-            failed_channels.append(channel_name)
+            failed_channels.append(
+                channel_name
+            )
             continue
 
         try:
-            sent_message = await channel.send(rules_text)
+            sent_message = await channel.send(
+                rules_text
+            )
 
-            sent_channels.append(channel_name)
+            sent_channels.append(
+                channel_name
+            )
 
             sent_messages.append({
                 "channel_name": channel_name,
@@ -1220,13 +1906,21 @@ async def rules(ctx, *, message: str = None):
             })
 
         except Exception as e:
-            print(f"Failed to send rules message to {channel_name}: {e}")
-            failed_channels.append(channel_name)
+            print(
+                f"Failed to send rules message "
+                f"to {channel_name}: {e}"
+            )
+
+            failed_channels.append(
+                channel_name
+            )
 
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": datetime.now(TZ).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
             "created_by": ctx.author.name,
             "text_preview": message[:150],
             "messages": sent_messages,
@@ -1234,91 +1928,182 @@ async def rules(ctx, *, message: str = None):
             "type": "rules"
         }
 
-        clock_data["announcement_batches"].append(batch)
-        clock_data["announcement_batches"] = clock_data["announcement_batches"][-50:]
+        clock_data[
+            "announcement_batches"
+        ].append(batch)
+
+        clock_data[
+            "announcement_batches"
+        ] = clock_data[
+            "announcement_batches"
+        ][-50:]
 
         save_clock_data()
 
     reply = ""
 
     if sent_channels:
-        reply += f"✅ Rules message sent to **{len(sent_channels)}** rules channels.\n\n"
-        reply += f"**Batch ID:** `{batch_id}`\n\n"
-        reply += "To delete this rules message:\n"
-        reply += f"`!deleteannouncement {batch_id}`\n"
+        reply += (
+            f"✅ Rules message sent to "
+            f"**{len(sent_channels)}** rules channels.\n\n"
+        )
+
+        reply += (
+            f"**Batch ID:** `{batch_id}`\n\n"
+        )
+
+        reply += (
+            "To delete this rules message:\n"
+        )
+
+        reply += (
+            f"`!deleteannouncement {batch_id}`\n"
+        )
+
         reply += "or\n"
         reply += "`!deleteannouncement latest`\n\n"
         reply += "**Sent to:**\n"
-        reply += "\n".join([f"- #{name}" for name in sent_channels])
+
+        reply += "\n".join(
+            [
+                f"- #{name}"
+                for name in sent_channels
+            ]
+        )
 
     if failed_channels:
         if reply:
             reply += "\n\n"
 
         reply += "❌ Failed / not found:\n"
-        reply += "\n".join([f"- #{name}" for name in failed_channels])
+
+        reply += "\n".join(
+            [
+                f"- #{name}"
+                for name in failed_channels
+            ]
+        )
 
     if not reply:
-        reply = "❌ Rules message was not sent to any channel."
+        reply = (
+            "❌ Rules message was not sent "
+            "to any channel."
+        )
 
     await ctx.send(reply)
 
 
-@bot.command(name="training", aliases=["trainings", "trainingmaterial", "tm"])
-async def training(ctx, *, message: str = None):
+@bot.command(
+    name="training",
+    aliases=[
+        "trainings",
+        "trainingmaterial",
+        "tm"
+    ]
+)
+async def training(
+    ctx,
+    *,
+    message: str = None
+):
     if not can_manage_broadcasts(ctx.author):
-        await ctx.send("❌ You don't have permission to send training material to all channels.")
+        await ctx.send(
+            "❌ You don't have permission to send "
+            "training material to all channels."
+        )
         return
 
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
-    training_channels = get_unique_training_channels(guild)
+    training_channels = (
+        get_unique_training_channels(guild)
+    )
 
     if not training_channels:
-        await ctx.send("❌ No training channels found. Make sure training channels have `training` in the channel name.")
+        await ctx.send(
+            "❌ No training channels found. "
+            "Make sure training channels have "
+            "`training` in the channel name."
+        )
         return
 
     referenced_message = None
 
-    if ctx.message.reference and ctx.message.reference.message_id:
+    if (
+        ctx.message.reference
+        and ctx.message.reference.message_id
+    ):
         try:
             reference_channel = ctx.channel
 
             if ctx.message.reference.channel_id:
-                found_channel = bot.get_channel(ctx.message.reference.channel_id)
-                if found_channel is not None:
-                    reference_channel = found_channel
+                found_channel = bot.get_channel(
+                    ctx.message.reference.channel_id
+                )
 
-            referenced_message = await reference_channel.fetch_message(ctx.message.reference.message_id)
+                if found_channel is not None:
+                    reference_channel = (
+                        found_channel
+                    )
+
+            referenced_message = (
+                await reference_channel.fetch_message(
+                    ctx.message.reference.message_id
+                )
+            )
+
         except Exception as e:
-            print(f"Failed to fetch referenced training message: {e}")
+            print(
+                f"Failed to fetch referenced "
+                f"training message: {e}"
+            )
+
             referenced_message = None
 
-    source_attachments = ctx.message.attachments
+    source_attachments = (
+        ctx.message.attachments
+    )
+
     training_text = message or ""
 
     if referenced_message is not None:
-        if not source_attachments and referenced_message.attachments:
-            source_attachments = referenced_message.attachments
+        if (
+            not source_attachments
+            and referenced_message.attachments
+        ):
+            source_attachments = (
+                referenced_message.attachments
+            )
 
-        if not training_text and referenced_message.content:
-            training_text = referenced_message.content
+        if (
+            not training_text
+            and referenced_message.content
+        ):
+            training_text = (
+                referenced_message.content
+            )
 
     if not training_text and not source_attachments:
         await ctx.send(
             "Use it like this:\n"
             "`!training message`\n"
             "or upload a photo/video with `!training`\n"
-            "or reply to a training message/photo/video with `!training`."
+            "or reply to a training message/photo/video "
+            "with `!training`."
         )
         return
 
     if len(training_text) > 2000:
-        await ctx.send("❌ Training message is too long. Discord limit is 2000 characters.")
+        await ctx.send(
+            "❌ Training message is too long. "
+            "Discord limit is 2000 characters."
+        )
         return
 
     batch_id = create_announcement_batch_id()
@@ -1328,33 +2113,54 @@ async def training(ctx, *, message: str = None):
     sent_messages = []
 
     for channel_name in training_channels:
-        channel = find_channel_by_name(guild, channel_name)
+        channel = find_channel_by_name(
+            guild,
+            channel_name
+        )
 
         if channel is None:
-            failed_channels.append(channel_name)
+            failed_channels.append(
+                channel_name
+            )
             continue
 
         try:
             files = []
 
             for attachment in source_attachments:
-                files.append(await attachment.to_file())
+                files.append(
+                    await attachment.to_file()
+                )
 
             if files:
                 sent_message = await channel.send(
-                    content=training_text if training_text else None,
+                    content=(
+                        training_text
+                        if training_text
+                        else None
+                    ),
                     files=files
                 )
+
             else:
-                sent_message = await channel.send(training_text)
+                sent_message = await channel.send(
+                    training_text
+                )
 
             for emoji in ["👀", "✅", "❌"]:
                 try:
-                    await sent_message.add_reaction(emoji)
+                    await sent_message.add_reaction(
+                        emoji
+                    )
                 except Exception as e:
-                    print(f"Failed to add training reaction {emoji}: {e}")
+                    print(
+                        f"Failed to add training "
+                        f"reaction {emoji}: {e}"
+                    )
 
-            sent_channels.append(channel_name)
+            sent_channels.append(
+                channel_name
+            )
 
             sent_messages.append({
                 "channel_name": channel_name,
@@ -1363,46 +2169,94 @@ async def training(ctx, *, message: str = None):
             })
 
         except Exception as e:
-            print(f"Failed to send training material to {channel_name}: {e}")
-            failed_channels.append(channel_name)
+            print(
+                f"Failed to send training material "
+                f"to {channel_name}: {e}"
+            )
+
+            failed_channels.append(
+                channel_name
+            )
 
     if sent_messages:
         batch = {
             "batch_id": batch_id,
-            "created_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": datetime.now(TZ).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
             "created_by": ctx.author.name,
-            "text_preview": training_text[:150] if training_text else "Training attachment",
+            "text_preview": (
+                training_text[:150]
+                if training_text
+                else "Training attachment"
+            ),
             "messages": sent_messages,
             "deleted": False,
             "type": "training"
         }
 
-        clock_data["announcement_batches"].append(batch)
-        clock_data["announcement_batches"] = clock_data["announcement_batches"][-50:]
+        clock_data[
+            "announcement_batches"
+        ].append(batch)
+
+        clock_data[
+            "announcement_batches"
+        ] = clock_data[
+            "announcement_batches"
+        ][-50:]
 
         save_clock_data()
 
     reply = ""
 
     if sent_channels:
-        reply += f"✅ Training material sent to **{len(sent_channels)}** training channels.\n\n"
-        reply += f"**Batch ID:** `{batch_id}`\n\n"
-        reply += "To delete this training material:\n"
-        reply += f"`!deletetraining {batch_id}`\n"
+        reply += (
+            f"✅ Training material sent to "
+            f"**{len(sent_channels)}** training channels."
+            f"\n\n"
+        )
+
+        reply += (
+            f"**Batch ID:** `{batch_id}`\n\n"
+        )
+
+        reply += (
+            "To delete this training material:\n"
+        )
+
+        reply += (
+            f"`!deletetraining {batch_id}`\n"
+        )
+
         reply += "or\n"
         reply += "`!deletetraining latest`\n\n"
         reply += "**Sent to:**\n"
-        reply += "\n".join([f"- #{name}" for name in sent_channels])
+
+        reply += "\n".join(
+            [
+                f"- #{name}"
+                for name in sent_channels
+            ]
+        )
 
     if failed_channels:
         if reply:
             reply += "\n\n"
 
         reply += "❌ Failed / not found:\n"
-        reply += "\n".join([f"- #{name}" for name in failed_channels])
+
+        reply += "\n".join(
+            [
+                f"- #{name}"
+                for name in failed_channels
+            ]
+        )
 
     if not reply:
-        reply = "❌ Training material was not sent to any channel."
+        reply = (
+            "❌ Training material was not sent "
+            "to any channel."
+        )
 
     await ctx.send(reply)
 
@@ -1412,17 +2266,29 @@ async def trainingchannels(ctx):
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
-    channels = get_unique_training_channels(guild)
+    channels = get_unique_training_channels(
+        guild
+    )
 
     if not channels:
-        await ctx.send("No training channels found.")
+        await ctx.send(
+            "No training channels found."
+        )
         return
 
     msg = "**Training channels found:**\n"
-    msg += "\n".join([f"- #{channel}" for channel in channels])
+
+    msg += "\n".join(
+        [
+            f"- #{channel}"
+            for channel in channels
+        ]
+    )
 
     for chunk in sendable_chunks(msg):
         await ctx.send(chunk)
@@ -1430,46 +2296,101 @@ async def trainingchannels(ctx):
 
 @bot.command()
 async def announcements(ctx):
-    batches = clock_data.get("announcement_batches", [])
+    batches = clock_data.get(
+        "announcement_batches",
+        []
+    )
 
     active_batches = [
-        batch for batch in batches
+        batch
+        for batch in batches
         if not batch.get("deleted", False)
     ]
 
     if not active_batches:
-        await ctx.send("No active announcements found.")
+        await ctx.send(
+            "No active announcements found."
+        )
         return
 
     last_batches = active_batches[-10:]
     last_batches.reverse()
 
-    msg = "**Recent active announcements / rules / training:**\n\n"
+    msg = (
+        "**Recent active announcements / "
+        "rules / training:**\n\n"
+    )
 
     for batch in last_batches:
-        batch_id = batch.get("batch_id", "unknown")
-        created_at = batch.get("created_at", "unknown time")
-        created_by = batch.get("created_by", "unknown")
-        text_preview = batch.get("text_preview", "")
-        channel_count = len(batch.get("messages", []))
-        batch_type = batch.get("type", "announcement")
+        batch_id = batch.get(
+            "batch_id",
+            "unknown"
+        )
 
-        msg += f"**{batch_id}** — `{batch_type}`\n"
-        msg += f"Created: `{created_at}` by **{created_by}**\n"
-        msg += f"Channels: **{channel_count}**\n"
-        msg += f"Preview: {text_preview}\n"
+        created_at = batch.get(
+            "created_at",
+            "unknown time"
+        )
+
+        created_by = batch.get(
+            "created_by",
+            "unknown"
+        )
+
+        text_preview = batch.get(
+            "text_preview",
+            ""
+        )
+
+        channel_count = len(
+            batch.get(
+                "messages",
+                []
+            )
+        )
+
+        batch_type = batch.get(
+            "type",
+            "announcement"
+        )
+
+        msg += (
+            f"**{batch_id}** — `{batch_type}`\n"
+        )
+
+        msg += (
+            f"Created: `{created_at}` "
+            f"by **{created_by}**\n"
+        )
+
+        msg += (
+            f"Channels: **{channel_count}**\n"
+        )
+
+        msg += (
+            f"Preview: {text_preview}\n"
+        )
 
         if batch_type == "training":
-            msg += f"Delete: `!deletetraining {batch_id}`\n\n"
+            msg += (
+                f"Delete: "
+                f"`!deletetraining {batch_id}`\n\n"
+            )
         else:
-            msg += f"Delete: `!deleteannouncement {batch_id}`\n\n"
+            msg += (
+                f"Delete: "
+                f"`!deleteannouncement {batch_id}`\n\n"
+            )
 
     for chunk in sendable_chunks(msg):
         await ctx.send(chunk)
 
 
 @bot.command()
-async def deleteannouncement(ctx, batch_id: str = None):
+async def deleteannouncement(
+    ctx,
+    batch_id: str = None
+):
     if not batch_id:
         await ctx.send(
             "Please write which announcement to delete.\n\n"
@@ -1482,39 +2403,66 @@ async def deleteannouncement(ctx, batch_id: str = None):
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
     batch = None
 
     if batch_id.lower() == "latest":
-        batch = get_latest_active_announcement_batch()
+        batch = (
+            get_latest_active_announcement_batch()
+        )
+
     else:
-        for saved_batch in clock_data.get("announcement_batches", []):
-            if saved_batch.get("batch_id") == batch_id:
+        for saved_batch in clock_data.get(
+            "announcement_batches",
+            []
+        ):
+            if (
+                saved_batch.get("batch_id")
+                == batch_id
+            ):
                 batch = saved_batch
                 break
 
     if batch is None:
-        await ctx.send("❌ Announcement batch not found.")
+        await ctx.send(
+            "❌ Announcement batch not found."
+        )
         return
 
     if batch.get("deleted", False):
-        await ctx.send("This announcement batch was already marked as deleted.")
+        await ctx.send(
+            "This announcement batch was "
+            "already marked as deleted."
+        )
         return
 
-    await delete_saved_batch_messages(ctx, batch, "announcement")
+    await delete_saved_batch_messages(
+        ctx,
+        batch,
+        "announcement"
+    )
 
 
 @bot.command(name="deletetraining")
-async def deletetraining(ctx, batch_id: str = None):
+async def deletetraining(
+    ctx,
+    batch_id: str = None
+):
     if not can_manage_broadcasts(ctx.author):
-        await ctx.send("❌ You don't have permission to delete training material.")
+        await ctx.send(
+            "❌ You don't have permission "
+            "to delete training material."
+        )
         return
 
     if not batch_id:
         await ctx.send(
-            "Please write which training material to delete.\n\n"
+            "Please write which training material "
+            "to delete.\n\n"
             "Examples:\n"
             "`!deletetraining latest`\n"
             "`!deletetraining 20260620-123456`"
@@ -1524,74 +2472,135 @@ async def deletetraining(ctx, batch_id: str = None):
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
     batch = None
 
     if batch_id.lower() == "latest":
-        batch = get_latest_active_batch_by_type("training")
+        batch = get_latest_active_batch_by_type(
+            "training"
+        )
+
     else:
-        for saved_batch in clock_data.get("announcement_batches", []):
-            if saved_batch.get("batch_id") == batch_id and saved_batch.get("type") == "training":
+        for saved_batch in clock_data.get(
+            "announcement_batches",
+            []
+        ):
+            if (
+                saved_batch.get("batch_id")
+                == batch_id
+                and saved_batch.get("type")
+                == "training"
+            ):
                 batch = saved_batch
                 break
 
     if batch is None:
-        await ctx.send("❌ Training batch not found.")
+        await ctx.send(
+            "❌ Training batch not found."
+        )
         return
 
     if batch.get("deleted", False):
-        await ctx.send("This training batch was already marked as deleted.")
+        await ctx.send(
+            "This training batch was already "
+            "marked as deleted."
+        )
         return
 
-    await delete_saved_batch_messages(ctx, batch, "training")
+    await delete_saved_batch_messages(
+        ctx,
+        batch,
+        "training"
+    )
 
 
 @bot.command()
 async def announcementchannels(ctx):
-    channels = get_unique_announcement_channels()
+    channels = (
+        get_unique_announcement_channels()
+    )
 
     if not channels:
-        await ctx.send("No announcement channels found in the sheet.")
+        await ctx.send(
+            "No announcement channels found "
+            "in the sheet."
+        )
         return
 
-    msg = "**Announcement channels from sheet:**\n"
-    msg += "\n".join([f"- #{channel}" for channel in channels])
+    msg = (
+        "**Announcement channels from sheet:**\n"
+    )
+
+    msg += "\n".join(
+        [
+            f"- #{channel}"
+            for channel in channels
+        ]
+    )
 
     for chunk in sendable_chunks(msg):
         await ctx.send(chunk)
 
 
 @bot.command()
-async def farm(ctx, fan_id: str = None, amount: str = None):
-    current_channel_name = normalize_name(ctx.channel.name)
+async def farm(
+    ctx,
+    fan_id: str = None,
+    amount: str = None
+):
+    current_channel_name = normalize_name(
+        ctx.channel.name
+    )
 
     if "staff" not in current_channel_name:
-        await ctx.send("❌ Farm logs must be submitted in the model's **staff** channel.")
+        await ctx.send(
+            "❌ Farm logs must be submitted "
+            "in the model's **staff** channel."
+        )
         return
 
     if not fan_id or not amount:
-        await ctx.send("Use it like this: `!farm u32475632407 3K`")
+        await ctx.send(
+            "Use it like this: "
+            "`!farm u32475632407 3K`"
+        )
         return
 
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. Check GUILD_ID.")
+        await ctx.send(
+            "❌ Guild not found. Check GUILD_ID."
+        )
         return
 
     if not FARM_REPORT_CHANNEL_NAME:
-        await ctx.send("❌ FARM_REPORT_CHANNEL_NAME is not set in `.env`.")
+        await ctx.send(
+            "❌ FARM_REPORT_CHANNEL_NAME "
+            "is not set in `.env`."
+        )
         return
 
-    report_channel = find_channel_by_name(guild, FARM_REPORT_CHANNEL_NAME)
+    report_channel = find_channel_by_name(
+        guild,
+        FARM_REPORT_CHANNEL_NAME
+    )
 
     if report_channel is None:
-        await ctx.send(f"❌ Farm report channel not found: `{FARM_REPORT_CHANNEL_NAME}`")
+        await ctx.send(
+            f"❌ Farm report channel not found: "
+            f"`{FARM_REPORT_CHANNEL_NAME}`"
+        )
         return
 
-    model_name = find_account_by_source_channel(ctx.channel.name)
+    model_name = find_account_by_source_channel(
+        ctx.channel.name
+    )
+
     chatter_name = ctx.author.display_name
 
     farm_embed = discord.Embed(
@@ -1605,22 +2614,35 @@ async def farm(ctx, fan_id: str = None, amount: str = None):
         timestamp=datetime.now(TZ)
     )
 
-    farm_embed.set_footer(text=f"Logged from #{ctx.channel.name}")
+    farm_embed.set_footer(
+        text=f"Logged from #{ctx.channel.name}"
+    )
 
-    await report_channel.send(embed=farm_embed)
+    await report_channel.send(
+        embed=farm_embed
+    )
 
     confirmation_message = await ctx.send(
         f"✅ Farm logged for **{model_name}**.\n"
-        f"Make sure to react with ✅ once the notes on the fan are updated."
+        f"Make sure to react with ✅ once "
+        f"the notes on the fan are updated."
     )
 
     for emoji in ["🌽", "✅", "❌"]:
         try:
-            await confirmation_message.add_reaction(emoji)
+            await confirmation_message.add_reaction(
+                emoji
+            )
         except discord.Forbidden:
-            print(f"Missing permission to add reaction {emoji} in #{ctx.channel.name}")
+            print(
+                f"Missing permission to add reaction "
+                f"{emoji} in #{ctx.channel.name}"
+            )
         except Exception as e:
-            print(f"Failed to add reaction {emoji}: {e}")
+            print(
+                f"Failed to add reaction "
+                f"{emoji}: {e}"
+            )
 
 
 @bot.command()
@@ -1631,7 +2653,9 @@ async def checkreminders(ctx):
     guild = get_main_guild(ctx)
 
     if guild is None:
-        await ctx.send("❌ Guild not found. GUILD_ID is wrong.")
+        await ctx.send(
+            "❌ Guild not found. GUILD_ID is wrong."
+        )
         return
 
     checked = 0
@@ -1648,73 +2672,127 @@ async def checkreminders(ctx):
             ).replace(tzinfo=TZ)
         except ValueError:
             await ctx.send(
-                f"❌ Invalid shift time: `{shift['shift_time']}` for `{shift['account']}`"
+                f"❌ Invalid shift time: "
+                f"`{shift['shift_time']}` "
+                f"for `{shift['account']}`"
             )
             continue
 
-        reminder_time = shift_datetime - timedelta(minutes=10)
+        reminder_time = (
+            shift_datetime
+            - timedelta(minutes=10)
+        )
 
-        scheduled_username = shift["scheduled_chatter_username"]
-        channel_name = normalize_name(shift["channel_name"])
+        scheduled_username = (
+            shift[
+                "scheduled_chatter_username"
+            ]
+        )
 
-        reminder_key = f"{guild_id}-{today}-{shift['account']}-{channel_name}-{shift['shift_time']}"
+        channel_name = normalize_name(
+            shift["channel_name"]
+        )
 
-        someone_clocked_in_for_this_channel = is_channel_clocked_in(guild_id, channel_name)
+        reminder_key = (
+            f"{guild_id}-{today}-"
+            f"{shift['account']}-"
+            f"{channel_name}-"
+            f"{shift['shift_time']}"
+        )
+
+        someone_clocked_in_for_this_channel = (
+            is_channel_clocked_in(
+                guild_id,
+                channel_name
+            )
+        )
 
         should_warn = (
             reminder_time <= now < shift_datetime
             and not someone_clocked_in_for_this_channel
-            and reminder_key not in clock_data["reminded"]
+            and reminder_key
+            not in clock_data["reminded"]
         )
 
         print(
-            f"MANUAL CHECK | account={shift['account']} | channel={channel_name} | "
-            f"shift={shift_datetime.strftime('%H:%M')} | now={now.strftime('%H:%M')} | "
+            f"MANUAL CHECK | "
+            f"account={shift['account']} | "
+            f"channel={channel_name} | "
+            f"shift={shift_datetime.strftime('%H:%M')} | "
+            f"now={now.strftime('%H:%M')} | "
             f"reminder={reminder_time.strftime('%H:%M')} | "
-            f"clocked_in={someone_clocked_in_for_this_channel} | "
-            f"already_reminded={reminder_key in clock_data['reminded']} | "
+            f"clocked_in="
+            f"{someone_clocked_in_for_this_channel} | "
+            f"already_reminded="
+            f"{reminder_key in clock_data['reminded']} | "
             f"should_warn={should_warn}"
         )
 
         if should_warn:
             possible += 1
 
-            channel = find_channel_by_name(guild, channel_name)
-            member = find_member_by_username(guild, scheduled_username)
-            supervisor_role = find_role_by_name(guild, shift["supervisor_role_name"])
+            channel = find_channel_by_name(
+                guild,
+                channel_name
+            )
+
+            member = find_member_by_username(
+                guild,
+                scheduled_username
+            )
+
+            supervisor_role = find_role_by_name(
+                guild,
+                shift["supervisor_role_name"]
+            )
 
             if channel is None:
-                await ctx.send(f"❌ Channel not found: `{channel_name}`")
+                await ctx.send(
+                    f"❌ Channel not found: "
+                    f"`{channel_name}`"
+                )
                 continue
 
             if member is None:
-                await ctx.send(f"❌ Member not found: `{scheduled_username}`")
+                await ctx.send(
+                    f"❌ Member not found: "
+                    f"`{scheduled_username}`"
+                )
                 continue
 
             if supervisor_role is None:
                 await ctx.send(
-                    f"❌ Supervisor role not found: `{shift['supervisor_role_name']}`"
+                    f"❌ Supervisor role not found: "
+                    f"`{shift['supervisor_role_name']}`"
                 )
                 continue
 
             await channel.send(
-                f"⏰ {member.mention} your shift starts in **10 minutes** "
-                f"and nobody is clocked in for this account yet.\n\n"
+                f"⏰ {member.mention} your shift starts "
+                f"in **10 minutes** and nobody is "
+                f"clocked in for this account yet.\n\n"
                 f"**Account:** {shift['account']}\n"
                 f"{supervisor_role.mention} please check this."
             )
 
-            clock_data["reminded"][reminder_key] = True
+            clock_data[
+                "reminded"
+            ][reminder_key] = True
+
             save_clock_data()
 
             await ctx.send(
-                f"✅ Sent reminder for `{shift['account']}` in `#{channel_name}`"
+                f"✅ Sent reminder for "
+                f"`{shift['account']}` "
+                f"in `#{channel_name}`"
             )
 
     if possible == 0:
         await ctx.send(
-            f"Checked **{checked} shifts**. No reminders are due right now.\n"
-            f"Current bot time: **{now.strftime('%H:%M')}**"
+            f"Checked **{checked} shifts**. "
+            f"No reminders are due right now.\n"
+            f"Current bot time: "
+            f"**{now.strftime('%H:%M')}**"
         )
 
 
@@ -1737,112 +2815,213 @@ async def shift_reminder_loop():
                 f"{today} {shift['shift_time']}",
                 "%Y-%m-%d %H:%M"
             ).replace(tzinfo=TZ)
+
         except ValueError:
-            print(f"Invalid shift time: {shift['shift_time']} for {shift['account']}")
+            print(
+                f"Invalid shift time: "
+                f"{shift['shift_time']} "
+                f"for {shift['account']}"
+            )
             continue
 
-        reminder_time = shift_datetime - timedelta(minutes=10)
-        no_clockin_alert_time = shift_datetime + timedelta(minutes=NO_CLOCKIN_ALERT_AFTER_MINUTES)
-        no_clockin_alert_window_end = shift_datetime + timedelta(
-            minutes=NO_CLOCKIN_ALERT_AFTER_MINUTES + NO_CLOCKIN_ALERT_WINDOW_MINUTES
+        reminder_time = (
+            shift_datetime
+            - timedelta(minutes=10)
         )
 
-        scheduled_username = shift["scheduled_chatter_username"]
-        channel_name = normalize_name(shift["channel_name"])
+        no_clockin_alert_time = (
+            shift_datetime
+            + timedelta(
+                minutes=NO_CLOCKIN_ALERT_AFTER_MINUTES
+            )
+        )
 
-        reminder_key = f"{guild_id}-{today}-{shift['account']}-{channel_name}-{shift['shift_time']}"
-        no_clockin_alert_key = f"{guild_id}-{today}-{shift['account']}-{channel_name}-{shift['shift_time']}-no-clockin"
+        no_clockin_alert_window_end = (
+            shift_datetime
+            + timedelta(
+                minutes=(
+                    NO_CLOCKIN_ALERT_AFTER_MINUTES
+                    + NO_CLOCKIN_ALERT_WINDOW_MINUTES
+                )
+            )
+        )
 
-        someone_clocked_in_for_this_channel = is_channel_clocked_in(guild_id, channel_name)
+        scheduled_username = (
+            shift[
+                "scheduled_chatter_username"
+            ]
+        )
+
+        channel_name = normalize_name(
+            shift["channel_name"]
+        )
+
+        reminder_key = (
+            f"{guild_id}-{today}-"
+            f"{shift['account']}-"
+            f"{channel_name}-"
+            f"{shift['shift_time']}"
+        )
+
+        no_clockin_alert_key = (
+            f"{guild_id}-{today}-"
+            f"{shift['account']}-"
+            f"{channel_name}-"
+            f"{shift['shift_time']}-"
+            f"no-clockin"
+        )
+
+        someone_clocked_in_for_this_channel = (
+            is_channel_clocked_in(
+                guild_id,
+                channel_name
+            )
+        )
 
         should_warn = (
             reminder_time <= now < shift_datetime
             and not someone_clocked_in_for_this_channel
-            and reminder_key not in clock_data["reminded"]
+            and reminder_key
+            not in clock_data["reminded"]
         )
 
         should_send_no_clockin_alert = (
-            no_clockin_alert_time <= now <= no_clockin_alert_window_end
+            no_clockin_alert_time
+            <= now
+            <= no_clockin_alert_window_end
             and not someone_clocked_in_for_this_channel
-            and no_clockin_alert_key not in clock_data["no_clockin_alerts"]
+            and no_clockin_alert_key
+            not in clock_data[
+                "no_clockin_alerts"
+            ]
         )
 
         print(
-            f"CHECK | account={shift['account']} | channel={channel_name} | "
-            f"shift={shift_datetime.strftime('%H:%M')} | now={now.strftime('%H:%M')} | "
+            f"CHECK | "
+            f"account={shift['account']} | "
+            f"channel={channel_name} | "
+            f"shift={shift_datetime.strftime('%H:%M')} | "
+            f"now={now.strftime('%H:%M')} | "
             f"reminder={reminder_time.strftime('%H:%M')} | "
-            f"no_clockin_alert={no_clockin_alert_time.strftime('%H:%M')} | "
-            f"no_clockin_window_end={no_clockin_alert_window_end.strftime('%H:%M')} | "
-            f"clocked_in={someone_clocked_in_for_this_channel} | "
-            f"already_reminded={reminder_key in clock_data['reminded']} | "
-            f"already_no_clockin_alert={no_clockin_alert_key in clock_data['no_clockin_alerts']} | "
+            f"no_clockin_alert="
+            f"{no_clockin_alert_time.strftime('%H:%M')} | "
+            f"no_clockin_window_end="
+            f"{no_clockin_alert_window_end.strftime('%H:%M')} | "
+            f"clocked_in="
+            f"{someone_clocked_in_for_this_channel} | "
+            f"already_reminded="
+            f"{reminder_key in clock_data['reminded']} | "
+            f"already_no_clockin_alert="
+            f"{no_clockin_alert_key in clock_data['no_clockin_alerts']} | "
             f"should_warn={should_warn} | "
-            f"should_send_no_clockin_alert={should_send_no_clockin_alert}"
+            f"should_send_no_clockin_alert="
+            f"{should_send_no_clockin_alert}"
         )
 
         if should_warn:
             print(
-                f"SENDING REMINDER: {shift['account']} | "
-                f"{channel_name} | {scheduled_username}"
+                f"SENDING REMINDER: "
+                f"{shift['account']} | "
+                f"{channel_name} | "
+                f"{scheduled_username}"
             )
 
-            channel = find_channel_by_name(guild, channel_name)
-            member = find_member_by_username(guild, scheduled_username)
+            channel = find_channel_by_name(
+                guild,
+                channel_name
+            )
+
+            member = find_member_by_username(
+                guild,
+                scheduled_username
+            )
+
             supervisor_role = find_role_by_name(
                 guild,
                 shift["supervisor_role_name"]
             )
 
             if channel is None:
-                print(f"Channel not found: {channel_name}")
+                print(
+                    f"Channel not found: "
+                    f"{channel_name}"
+                )
                 continue
 
             if member is None:
-                print(f"Member not found: {scheduled_username}")
+                print(
+                    f"Member not found: "
+                    f"{scheduled_username}"
+                )
                 continue
 
             if supervisor_role is None:
-                print(f"Supervisor role not found: {shift['supervisor_role_name']}")
+                print(
+                    f"Supervisor role not found: "
+                    f"{shift['supervisor_role_name']}"
+                )
                 continue
 
             await channel.send(
-                f"⏰ {member.mention} your shift starts in **10 minutes** "
-                f"and nobody is clocked in for this account yet.\n\n"
+                f"⏰ {member.mention} your shift starts "
+                f"in **10 minutes** and nobody is "
+                f"clocked in for this account yet.\n\n"
                 f"**Account:** {shift['account']}\n"
                 f"{supervisor_role.mention} please check this."
             )
 
-            clock_data["reminded"][reminder_key] = True
+            clock_data[
+                "reminded"
+            ][reminder_key] = True
+
             save_clock_data()
 
         if should_send_no_clockin_alert:
             print(
-                f"SENDING NO CLOCK-IN ALERT: {shift['account']} | "
-                f"{channel_name} | {scheduled_username}"
+                f"SENDING NO CLOCK-IN ALERT: "
+                f"{shift['account']} | "
+                f"{channel_name} | "
+                f"{scheduled_username}"
             )
 
-            channel = find_channel_by_name(guild, channel_name)
+            channel = find_channel_by_name(
+                guild,
+                channel_name
+            )
+
             supervisor_role = find_role_by_name(
                 guild,
                 shift["supervisor_role_name"]
             )
 
             if channel is None:
-                print(f"Channel not found for no clock-in alert: {channel_name}")
+                print(
+                    f"Channel not found for "
+                    f"no clock-in alert: "
+                    f"{channel_name}"
+                )
                 continue
 
-            clock_data["no_clockin_alerts"][no_clockin_alert_key] = True
+            clock_data[
+                "no_clockin_alerts"
+            ][no_clockin_alert_key] = True
+
             save_clock_data()
 
             supervisor_text = ""
 
             if supervisor_role is not None:
-                supervisor_text = f"\n{supervisor_role.mention} please check coverage."
+                supervisor_text = (
+                    f"\n{supervisor_role.mention} "
+                    f"please check coverage."
+                )
 
             await channel.send(
                 f"🚨 **No clock-in alert**\n\n"
-                f"Nobody is clocked in for **{shift['account']}** "
-                f"**{NO_CLOCKIN_ALERT_AFTER_MINUTES} minutes after shift start**."
+                f"Nobody is clocked in for "
+                f"**{shift['account']}** "
+                f"**{NO_CLOCKIN_ALERT_AFTER_MINUTES} "
+                f"minutes after shift start**."
                 f"{supervisor_text}"
             )
 
