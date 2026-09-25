@@ -1615,8 +1615,7 @@ def build_mma_embed(request_data):
     raw_message = request_data.get("mass_message", "").strip()
     mass_message, follow_ups = parse_mma_sequence(raw_message)
 
-    # Keep routing/submission info compact so the copy itself gets the visual focus.
-    description = f"<#{source_channel_id}>  •  Submitted by <@{requester_id}>"
+    description = f"<#{source_channel_id}> • Submitted by <@{requester_id}>"
     embed = discord.Embed(
         title=f"📨 {model_name}",
         description=description,
@@ -1624,27 +1623,29 @@ def build_mma_embed(request_data):
         timestamp=datetime.now(TZ),
     )
 
-    # The actual copy is intentionally the largest/clearest part of the card.
+    # Labels stay small; the submitted copy gets the visual emphasis.
+    # Zero-width spacer fields create clear vertical margins between sections.
     embed.add_field(
-        name="💬 MASS MESSAGE",
-        value=_mma_field_value(mass_message),
+        name="💬 MASS",
+        value=_mma_field_value(f"### {mass_message}"),
         inline=False,
     )
 
-    # Discord allows up to 25 embed fields. Reserve a few fields for metadata.
     max_follow_ups = 20
     for index, follow_up in enumerate(follow_ups[:max_follow_ups], start=1):
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
         embed.add_field(
-            name=f"↳ FOLLOW UP {index}",
-            value=_mma_field_value(follow_up),
+            name=f"FU {index}",
+            value=_mma_field_value(f"### {follow_up}"),
             inline=False,
         )
 
     if len(follow_ups) > max_follow_ups:
         remaining = len(follow_ups) - max_follow_ups
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
         embed.add_field(
-            name="↳ MORE FOLLOW UPS",
-            value=f"+{remaining} additional follow up(s) not shown in the embed.",
+            name="MORE FU",
+            value=f"### +{remaining} additional follow up(s)",
             inline=False,
         )
 
@@ -1654,6 +1655,7 @@ def build_mma_embed(request_data):
             f"[Attachment {index}]({url})"
             for index, url in enumerate(attachments, start=1)
         )
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
         embed.add_field(
             name="📎 ATTACHMENTS",
             value=_mma_field_value(attachment_text),
@@ -1668,12 +1670,13 @@ def build_mma_embed(request_data):
     if status in ("approved", "declined"):
         decided_by = request_data.get("decided_by")
         if decided_by:
-            compact_meta.append(f"{status_text}  •  Reviewed by <@{decided_by}>")
+            compact_meta.append(f"{status_text} • Reviewed by <@{decided_by}>")
         else:
             compact_meta.append(status_text)
     else:
         compact_meta.append(status_text)
 
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
     embed.add_field(
         name="\u200b",
         value="\n".join(compact_meta)[:1024],
