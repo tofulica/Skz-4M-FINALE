@@ -1547,6 +1547,56 @@ def resolve_ping_mentions(guild, ping_value):
     return " ".join(mentions)
 
 
+def parse_mma_sequence(text):
+    """Split an MMA submission into one mass message and any number of follow ups.
+
+    Supported formats:
+    - Paragraphs separated by blank lines (first block = mass, the rest = follow ups)
+    - Explicit labels such as FU1:, FU 2:, Follow Up 3:, Follow-up 4:
+    """
+    text = (text or "").replace("\r\n", "\n").strip()
+    if not text:
+        return "", []
+
+    import re
+
+    # Prefer explicit FU / Follow Up labels when they are present.
+    label_pattern = re.compile(
+        r"(?im)^\s*(?:fu\s*\d*|follow\s*[- ]?up\s*\d*)\s*:\s*"
+    )
+    matches = list(label_pattern.finditer(text))
+
+    if matches:
+        mass = text[:matches[0].start()].strip()
+        follow_ups = []
+        for i, match in enumerate(matches):
+            value_start = match.end()
+            value_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            value = text[value_start:value_end].strip()
+            if value:
+                follow_ups.append(value)
+        return mass, follow_ups
+
+    # Otherwise each paragraph after the first one is treated as a follow up.
+    blocks = [
+        block.strip()
+        for block in re.split(r"\n\s*\n+", text)
+        if block.strip()
+    ]
+
+    if not blocks:
+        return text, []
+
+    return blocks[0], blocks[1:]
+
+
+def _mma_field_value(text, limit=1024):
+    text = (text or "-").strip() or "-"
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
 def build_mma_embed(request_data):
     status = request_data.get("status", "pending")
     if status == "approved":
@@ -1562,41 +1612,77 @@ def build_mma_embed(request_data):
     model_name = request_data.get("model_name", "Unknown Model")
     source_channel_id = request_data.get("source_channel_id")
     requester_id = request_data.get("requester_id")
-    mass_message = request_data.get("mass_message", "").strip()
+    raw_message = request_data.get("mass_message", "").strip()
+    mass_message, follow_ups = parse_mma_sequence(raw_message)
 
-    description = (
-        f"<#{source_channel_id}> • Submitted by <@{requester_id}>\n"
-        f"**{status_text}**\n\n"
-        f"### 📝 Mass Message & Follow Ups\n"
-        f">>> {mass_message}"
-    )
+    # Keep routing/submission info compact so the copy itself gets the visual focus.
+    description = f"<#{source_channel_id}>  •  Submitted by <@{requester_id}>"
     embed = discord.Embed(
         title=f"📨 {model_name}",
-        description=description[:4096],
+        description=description,
         color=color,
         timestamp=datetime.now(TZ),
     )
 
-    manager_text = request_data.get("manager", "")
-    if manager_text:
-        embed.add_field(name="Manager", value=manager_text[:1024], inline=False)
+    # The actual copy is intentionally the largest/clearest part of the card.
+    embed.add_field(
+        name="💬 MASS MESSAGE",
+        value=_mma_field_value(mass_message),
+        inline=False,
+    )
+
+    # Discord allows up to 25 embed fields. Reserve a few fields for metadata.
+    max_follow_ups = 20
+    for index, follow_up in enumerate(follow_ups[:max_follow_ups], start=1):
+        embed.add_field(
+            name=f"↳ FOLLOW UP {index}",
+            value=_mma_field_value(follow_up),
+            inline=False,
+        )
+
+    if len(follow_ups) > max_follow_ups:
+        remaining = len(follow_ups) - max_follow_ups
+        embed.add_field(
+            name="↳ MORE FOLLOW UPS",
+            value=f"+{remaining} additional follow up(s) not shown in the embed.",
+            inline=False,
+        )
 
     attachments = request_data.get("attachments", [])
     if attachments:
         attachment_text = "\n".join(
-            f"[Attachment {index}]({url})" for index, url in enumerate(attachments, start=1)
+            f"[Attachment {index}]({url})"
+            for index, url in enumerate(attachments, start=1)
         )
-        embed.add_field(name="Attachments", value=attachment_text[:1024], inline=False)
+        embed.add_field(
+            name="📎 ATTACHMENTS",
+            value=_mma_field_value(attachment_text),
+            inline=False,
+        )
+
+    manager_text = request_data.get("manager", "").strip()
+    compact_meta = []
+    if manager_text:
+        compact_meta.append(f"👤 Manager: {manager_text}")
 
     if status in ("approved", "declined"):
         decided_by = request_data.get("decided_by")
-        decided_at = request_data.get("decided_at")
         if decided_by:
-            embed.add_field(name="Reviewed by", value=f"<@{decided_by}>", inline=True)
-        if decided_at:
-            embed.add_field(name="Reviewed at", value=decided_at, inline=True)
+            compact_meta.append(f"{status_text}  •  Reviewed by <@{decided_by}>")
+        else:
+            compact_meta.append(status_text)
+    else:
+        compact_meta.append(status_text)
 
-    embed.set_footer(text=f"Approval ID: {request_data.get('request_id', 'unknown')}")
+    embed.add_field(
+        name="\u200b",
+        value="\n".join(compact_meta)[:1024],
+        inline=False,
+    )
+
+    embed.set_footer(
+        text=f"Approval ID: {request_data.get('request_id', 'unknown')}"
+    )
     return embed
 
 
