@@ -31,8 +31,8 @@ CONTENT_REQUEST_CHANNEL_NAME = (
     os.getenv("CONTENT_REQUEST_CHANNEL_NAME") or "content-requests"
 ).strip().lower().replace("#", "")
 
-APPROVAL_CHANNEL_NAME = (
-    os.getenv("APPROVAL_CHANNEL_NAME") or "approvals"
+MANAGER_ROUTING_CHANNEL_NAME = (
+    os.getenv("MANAGER_ROUTING_CHANNEL_NAME") or "manager-routing"
 ).strip().lower().replace("#", "")
 
 TZ = ZoneInfo("Europe/Berlin")
@@ -1427,393 +1427,260 @@ async def delete_saved_batch_messages(
 # =========================
 
 def create_mma_request_id():
-    return datetime.now(
-        TZ
-    ).strftime(
-        "%Y%m%d-%H%M%S-%f"
-    )
+    return datetime.now(TZ).strftime("%Y%m%d-%H%M%S-%f")
 
 
 def get_mma_request(request_id):
-    return clock_data.get(
-        "mma_requests",
-        {}
-    ).get(
-        request_id
-    )
+    return clock_data.get("mma_requests", {}).get(request_id)
 
 
-def build_mma_embed(
-    request_data
-):
-    status = request_data.get(
-        "status",
-        "pending"
-    )
+def extract_channel_id(value):
+    if not value:
+        return None
+    value = value.strip()
+    if value.startswith("<#") and value.endswith(">"):
+        possible_id = value[2:-1]
+        if possible_id.isdigit():
+            return int(possible_id)
+    if "discord.com/channels/" in value:
+        clean_value = value.split("?", 1)[0].rstrip("/")
+        possible_id = clean_value.rsplit("/", 1)[-1]
+        if possible_id.isdigit():
+            return int(possible_id)
+    return None
 
+
+def parse_manager_routing_text(text):
+    records = []
+    current = {}
+    field_map = {
+        "model": "model",
+        "approval channel": "approval_channel",
+        "manager": "manager",
+        "manager channel": "manager_channel",
+        "ping": "ping",
+    }
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        normalized_key = key.strip().lower()
+        if normalized_key not in field_map:
+            continue
+        target_key = field_map[normalized_key]
+        if target_key == "model" and current.get("model"):
+            records.append(current)
+            current = {}
+        current[target_key] = value.strip()
+    if current.get("model"):
+        records.append(current)
+    return records
+
+
+def routing_approval_channel_matches(record_value, channel):
+    if not record_value:
+        return False
+    channel_id = extract_channel_id(record_value)
+    if channel_id is not None:
+        return channel.id == channel_id
+    return normalize_name(record_value) == normalize_name(channel.name)
+
+
+async def load_manager_routing(guild):
+    routing_channel = find_channel_by_name(guild, MANAGER_ROUTING_CHANNEL_NAME)
+    if routing_channel is None:
+        return None, []
+    records = []
+    try:
+        async for message in routing_channel.history(limit=None, oldest_first=True):
+            if message.content:
+                records.extend(parse_manager_routing_text(message.content))
+    except discord.Forbidden:
+        print(f"MMA ROUTING ERROR | Bot cannot read #{MANAGER_ROUTING_CHANNEL_NAME}.")
+        return routing_channel, []
+    except Exception as e:
+        print(f"MMA ROUTING ERROR | Failed to read #{MANAGER_ROUTING_CHANNEL_NAME}: {e}")
+        return routing_channel, []
+    return routing_channel, records
+
+
+async def get_mma_route_for_channel(guild, source_channel):
+    routing_channel, records = await load_manager_routing(guild)
+    if routing_channel is None:
+        return None, f"❌ Manager routing channel not found: `#{MANAGER_ROUTING_CHANNEL_NAME}`"
+    for record in records:
+        if routing_approval_channel_matches(record.get("approval_channel", ""), source_channel):
+            manager_channel_id = extract_channel_id(record.get("manager_channel", ""))
+            if manager_channel_id is None:
+                return None, "❌ This model has no valid **Manager Channel** URL in the manager-routing channel."
+            manager_channel = await get_channel_from_id(manager_channel_id)
+            if manager_channel is None:
+                return None, "❌ I could not access this model's Manager Channel."
+            route = dict(record)
+            route["manager_channel_id"] = str(manager_channel_id)
+            route["manager_channel"] = manager_channel
+            return route, None
+    return None, f"❌ This approval channel is not configured in `#{MANAGER_ROUTING_CHANNEL_NAME}`."
+
+
+def resolve_ping_mentions(guild, ping_value):
+    if not ping_value:
+        return ""
+    mentions = []
+    seen_ids = set()
+    for token in ping_value.split():
+        clean = token.strip(" ,")
+        if clean.startswith("<@") and clean.endswith(">"):
+            possible_id = clean.replace("<@", "").replace("!", "").replace(">", "")
+            if possible_id.isdigit():
+                member = guild.get_member(int(possible_id))
+                if member and member.id not in seen_ids:
+                    mentions.append(member.mention)
+                    seen_ids.add(member.id)
+                continue
+        if clean.startswith("@"):
+            member = find_member_by_username(guild, clean)
+            if member and member.id not in seen_ids:
+                mentions.append(member.mention)
+                seen_ids.add(member.id)
+    return " ".join(mentions)
+
+
+def build_mma_embed(request_data):
+    status = request_data.get("status", "pending")
     if status == "approved":
         color = discord.Color.green()
         status_text = "✅ APPROVED"
-
     elif status == "declined":
         color = discord.Color.red()
         status_text = "❌ DECLINED"
-
     else:
         color = discord.Color.orange()
-        status_text = "⏳ PENDING APPROVAL"
+        status_text = "⏳ PENDING"
 
-    mass_message = request_data.get(
-        "mass_message",
-        ""
+    model_name = request_data.get("model_name", "Unknown Model")
+    source_channel_id = request_data.get("source_channel_id")
+    requester_id = request_data.get("requester_id")
+    mass_message = request_data.get("mass_message", "").strip()
+
+    description = (
+        f"<#{source_channel_id}> • Submitted by <@{requester_id}>\n"
+        f"**{status_text}**\n\n"
+        f"### 📝 Mass Message & Follow Ups\n"
+        f">>> {mass_message}"
     )
-
     embed = discord.Embed(
-        title="📨 Mass Message Approval",
-        description=mass_message,
+        title=f"📨 {model_name}",
+        description=description[:4096],
         color=color,
-        timestamp=datetime.now(TZ)
+        timestamp=datetime.now(TZ),
     )
 
-    model_name = request_data.get(
-        "model_name"
-    )
+    manager_text = request_data.get("manager", "")
+    if manager_text:
+        embed.add_field(name="Manager", value=manager_text[:1024], inline=False)
 
-    if model_name:
-        embed.add_field(
-            name="Model",
-            value=model_name,
-            inline=True
-        )
-
-    embed.add_field(
-        name="Submitted by",
-        value=(
-            f"<@{request_data.get('requester_id')}>"
-        ),
-        inline=True
-    )
-
-    embed.add_field(
-        name="Source",
-        value=(
-            f"<#{request_data.get('source_channel_id')}>"
-        ),
-        inline=True
-    )
-
-    embed.add_field(
-        name="Status",
-        value=status_text,
-        inline=True
-    )
-
-    attachments = request_data.get(
-        "attachments",
-        []
-    )
-
+    attachments = request_data.get("attachments", [])
     if attachments:
-        attachment_lines = []
-
-        for index, attachment_url in enumerate(
-            attachments,
-            start=1
-        ):
-            attachment_lines.append(
-                f"[Attachment {index}]"
-                f"({attachment_url})"
-            )
-
         attachment_text = "\n".join(
-            attachment_lines
+            f"[Attachment {index}]({url})" for index, url in enumerate(attachments, start=1)
         )
+        embed.add_field(name="Attachments", value=attachment_text[:1024], inline=False)
 
-        if len(attachment_text) > 1024:
-            attachment_text = (
-                attachment_text[:1000]
-                + "..."
-            )
-
-        embed.add_field(
-            name="Attachments",
-            value=attachment_text,
-            inline=False
-        )
-
-    if status in [
-        "approved",
-        "declined"
-    ]:
-        decided_by = request_data.get(
-            "decided_by"
-        )
-
-        decided_at = request_data.get(
-            "decided_at"
-        )
-
+    if status in ("approved", "declined"):
+        decided_by = request_data.get("decided_by")
+        decided_at = request_data.get("decided_at")
         if decided_by:
-            embed.add_field(
-                name="Reviewed by",
-                value=(
-                    f"<@{decided_by}>"
-                ),
-                inline=True
-            )
-
+            embed.add_field(name="Reviewed by", value=f"<@{decided_by}>", inline=True)
         if decided_at:
-            embed.add_field(
-                name="Reviewed at",
-                value=decided_at,
-                inline=True
-            )
+            embed.add_field(name="Reviewed at", value=decided_at, inline=True)
 
-    embed.set_footer(
-        text=(
-            f"Approval ID: "
-            f"{request_data.get('request_id', 'unknown')}"
-        )
-    )
-
+    embed.set_footer(text=f"Approval ID: {request_data.get('request_id', 'unknown')}")
     return embed
 
 
-async def get_channel_from_id(
-    channel_id
-):
+async def get_channel_from_id(channel_id):
     if not channel_id:
         return None
-
     try:
-        channel_id = int(
-            channel_id
-        )
-
-    except (
-        TypeError,
-        ValueError
-    ):
+        channel_id = int(channel_id)
+    except (TypeError, ValueError):
         return None
-
-    channel = bot.get_channel(
-        channel_id
-    )
-
+    channel = bot.get_channel(channel_id)
     if channel is not None:
         return channel
-
     try:
-        return await bot.fetch_channel(
-            channel_id
-        )
-
+        return await bot.fetch_channel(channel_id)
     except Exception as e:
-        print(
-            f"Could not fetch channel "
-            f"{channel_id}: {e}"
-        )
-
+        print(f"Could not fetch channel {channel_id}: {e}")
         return None
 
 
-async def handle_mma_decision(
-    interaction,
-    request_id,
-    decision
-):
-    request_data = get_mma_request(
-        request_id
-    )
-
+async def handle_mma_decision(interaction, request_id, decision):
+    request_data = get_mma_request(request_id)
     if request_data is None:
-        await interaction.response.send_message(
-            "❌ This approval request "
-            "no longer exists.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ This approval request no longer exists.", ephemeral=True)
         return
-
-    current_status = request_data.get(
-        "status",
-        "pending"
-    )
-
+    current_status = request_data.get("status", "pending")
     if current_status != "pending":
         await interaction.response.send_message(
-            f"⚠️ This mass message has already "
-            f"been **{current_status}**.",
-            ephemeral=True
+            f"⚠️ This mass message has already been **{current_status}**.", ephemeral=True
         )
         return
 
-    if decision == "approved":
-        request_data[
-            "status"
-        ] = "approved"
-
-    else:
-        request_data[
-            "status"
-        ] = "declined"
-
-    request_data[
-        "decided_by"
-    ] = str(
-        interaction.user.id
-    )
-
-    request_data[
-        "decided_by_name"
-    ] = interaction.user.display_name
-
-    request_data[
-        "decided_at"
-    ] = datetime.now(
-        TZ
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
+    request_data["status"] = decision
+    request_data["decided_by"] = str(interaction.user.id)
+    request_data["decided_by_name"] = interaction.user.display_name
+    request_data["decided_at"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
     save_clock_data()
 
-    disabled_view = MMAApprovalView(
-        request_id=request_id,
-        disabled=True
-    )
-
-    embed = build_mma_embed(
-        request_data
-    )
-
     await interaction.response.edit_message(
-        embed=embed,
-        view=disabled_view
+        embed=build_mma_embed(request_data),
+        view=MMAApprovalView(request_id=request_id, disabled=True),
     )
 
-    source_channel = (
-        await get_channel_from_id(
-            request_data.get(
-                "source_channel_id"
-            )
-        )
-    )
-
+    source_channel = await get_channel_from_id(request_data.get("source_channel_id"))
     if source_channel is None:
-        print(
-            f"MMA RESULT ERROR | "
-            f"Could not find source channel "
-            f"{request_data.get('source_channel_id')} "
-            f"for request {request_id}"
-        )
+        print(f"MMA RESULT ERROR | Could not find source channel for request {request_id}")
         return
 
-    requester_id = request_data.get(
-        "requester_id"
-    )
-
+    requester_id = request_data.get("requester_id")
     if decision == "approved":
         result_text = (
-            f"✅ <@{requester_id}> "
-            f"your Mass Message has been approved "
-            f"and is ready to send!\n\n"
-            f"Approved by: "
-            f"{interaction.user.mention}"
+            f"✅ <@{requester_id}> your Mass Message has been approved and is ready to send!\n\n"
+            f"Approved by: {interaction.user.mention}"
         )
-
     else:
         result_text = (
-            f"❌ <@{requester_id}> "
-            f"your Mass Message was declined "
-            f"and needs changes before sending.\n\n"
-            f"Reviewed by: "
-            f"{interaction.user.mention}"
+            f"❌ <@{requester_id}> your Mass Message was declined and needs changes before sending.\n\n"
+            f"Reviewed by: {interaction.user.mention}"
         )
-
-    await source_channel.send(
-        result_text
-    )
+    await source_channel.send(result_text)
 
 
-class MMAApprovalView(
-    discord.ui.View
-):
-    def __init__(
-        self,
-        request_id,
-        disabled=False
-    ):
-        super().__init__(
-            timeout=None
-        )
-
+class MMAApprovalView(discord.ui.View):
+    def __init__(self, request_id, disabled=False):
+        super().__init__(timeout=None)
         self.request_id = request_id
-
-        approve_button = (
-            discord.ui.Button(
-                label="Approve",
-                emoji="✅",
-                style=(
-                    discord.ButtonStyle.success
-                ),
-                custom_id=(
-                    f"mma_approve_"
-                    f"{request_id}"
-                ),
-                disabled=disabled
-            )
+        approve_button = discord.ui.Button(
+            label="Approve", emoji="✅", style=discord.ButtonStyle.success,
+            custom_id=f"mma_approve_{request_id}", disabled=disabled,
         )
-
-        decline_button = (
-            discord.ui.Button(
-                label="Decline",
-                emoji="❌",
-                style=(
-                    discord.ButtonStyle.danger
-                ),
-                custom_id=(
-                    f"mma_decline_"
-                    f"{request_id}"
-                ),
-                disabled=disabled
-            )
+        decline_button = discord.ui.Button(
+            label="Decline", emoji="❌", style=discord.ButtonStyle.danger,
+            custom_id=f"mma_decline_{request_id}", disabled=disabled,
         )
+        approve_button.callback = self.approve_callback
+        decline_button.callback = self.decline_callback
+        self.add_item(approve_button)
+        self.add_item(decline_button)
 
-        approve_button.callback = (
-            self.approve_callback
-        )
+    async def approve_callback(self, interaction):
+        await handle_mma_decision(interaction, self.request_id, "approved")
 
-        decline_button.callback = (
-            self.decline_callback
-        )
-
-        self.add_item(
-            approve_button
-        )
-
-        self.add_item(
-            decline_button
-        )
-
-    async def approve_callback(
-        self,
-        interaction
-    ):
-        await handle_mma_decision(
-            interaction,
-            self.request_id,
-            "approved"
-        )
-
-    async def decline_callback(
-        self,
-        interaction
-    ):
-        await handle_mma_decision(
-            interaction,
-            self.request_id,
-            "declined"
-        )
+    async def decline_callback(self, interaction):
+        await handle_mma_decision(interaction, self.request_id, "declined")
 
 
 mma_views_registered = False
@@ -2783,189 +2650,80 @@ async def contentrequest(
 # =========================
 
 @bot.command(name="mma")
-async def mma(
-    ctx,
-    *,
-    mass_message: str = None
-):
-    current_channel_name = (
-        normalize_name(
-            ctx.channel.name
-        )
-    )
-
-    if (
-        "approval"
-        not in current_channel_name
-    ):
+async def mma(ctx, *, mass_message: str = None):
+    current_channel_name = normalize_name(ctx.channel.name)
+    if "approval" not in current_channel_name:
         await ctx.send(
-            "❌ Mass message approvals must "
-            "be submitted in a channel that "
-            "has **approval** in its name."
+            "❌ Mass message approvals must be submitted in a channel that has **approval** in its name."
         )
         return
-
     if not mass_message:
-        await ctx.send(
-            "Use it like this:\n"
-            "`!mma your mass message here`"
-        )
+        await ctx.send("Use it like this:\n`!mma your mass message here`")
         return
-
-    if len(mass_message) > 4000:
-        await ctx.send(
-            "❌ Mass message is too long "
-            "for the approval system."
-        )
+    if len(mass_message) > 3900:
+        await ctx.send("❌ Mass message is too long for the approval system.")
         return
 
     guild = get_main_guild(ctx)
-
     if guild is None:
-        await ctx.send(
-            "❌ Guild not found. "
-            "Check GUILD_ID."
-        )
+        await ctx.send("❌ Guild not found. Check GUILD_ID.")
         return
 
-    approval_channel = (
-        find_channel_by_name(
-            guild,
-            APPROVAL_CHANNEL_NAME
-        )
-    )
-
-    if approval_channel is None:
-        await ctx.send(
-            f"❌ Approval channel "
-            f"not found: "
-            f"`#{APPROVAL_CHANNEL_NAME}`"
-        )
+    route, route_error = await get_mma_route_for_channel(guild, ctx.channel)
+    if route is None:
+        await ctx.send(route_error)
         return
 
-    request_id = (
-        create_mma_request_id()
-    )
-
-    attachments = [
-        attachment.url
-        for attachment
-        in ctx.message.attachments
-    ]
-
-    model_name = (
-        find_account_by_source_channel(
-            ctx.channel.name
-        )
-    )
+    manager_channel = route["manager_channel"]
+    request_id = create_mma_request_id()
+    attachments = [attachment.url for attachment in ctx.message.attachments]
+    model_name = route.get("model", "Unknown Model")
 
     request_data = {
         "request_id": request_id,
-        "requester_id": str(
-            ctx.author.id
-        ),
-        "requester_name": (
-            ctx.author.display_name
-        ),
-        "guild_id": str(
-            guild.id
-        ),
-        "source_channel_id": str(
-            ctx.channel.id
-        ),
-        "source_channel_name": (
-            ctx.channel.name
-        ),
-        "source_message_id": str(
-            ctx.message.id
-        ),
+        "requester_id": str(ctx.author.id),
+        "requester_name": ctx.author.display_name,
+        "guild_id": str(guild.id),
+        "source_channel_id": str(ctx.channel.id),
+        "source_channel_name": ctx.channel.name,
+        "source_message_id": str(ctx.message.id),
         "model_name": model_name,
+        "manager": route.get("manager", ""),
+        "ping": route.get("ping", ""),
+        "manager_channel_id": str(manager_channel.id),
         "mass_message": mass_message,
         "attachments": attachments,
         "status": "pending",
-        "submitted_at": datetime.now(
-            TZ
-        ).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        ),
-        "approval_channel_id": str(
-            approval_channel.id
-        ),
+        "submitted_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        "approval_channel_id": str(manager_channel.id),
         "approval_message_id": None,
         "decided_by": None,
         "decided_by_name": None,
-        "decided_at": None
+        "decided_at": None,
     }
 
-    if (
-        "mma_requests"
-        not in clock_data
-    ):
-        clock_data[
-            "mma_requests"
-        ] = {}
-
-    clock_data[
-        "mma_requests"
-    ][request_id] = request_data
-
+    clock_data.setdefault("mma_requests", {})[request_id] = request_data
     save_clock_data()
 
-    embed = build_mma_embed(
-        request_data
-    )
-
-    view = MMAApprovalView(
-        request_id
-    )
-
+    ping_text = resolve_ping_mentions(guild, route.get("ping", ""))
     try:
-        approval_message = (
-            await approval_channel.send(
-                embed=embed,
-                view=view
-            )
+        approval_message = await manager_channel.send(
+            content=ping_text or None,
+            embed=build_mma_embed(request_data),
+            view=MMAApprovalView(request_id),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
         )
-
-        request_data[
-            "approval_message_id"
-        ] = str(
-            approval_message.id
-        )
-
+        request_data["approval_message_id"] = str(approval_message.id)
         save_clock_data()
-
     except Exception as e:
-        print(
-            f"Failed to send "
-            f"MMA approval: {e}"
-        )
-
-        clock_data[
-            "mma_requests"
-        ].pop(
-            request_id,
-            None
-        )
-
+        print(f"Failed to send MMA approval: {e}")
+        clock_data["mma_requests"].pop(request_id, None)
         save_clock_data()
-
-        await ctx.send(
-            "❌ Failed to send "
-            "the mass message "
-            "for approval."
-        )
+        await ctx.send("❌ Failed to send the mass message to the model's Manager Channel.")
         return
 
-    await ctx.message.add_reaction(
-        "✅"
-    )
-
-    await ctx.send(
-        f"📨 {ctx.author.mention} "
-        f"your mass message has been "
-        f"sent for approval."
-    )
+    await ctx.message.add_reaction("✅")
+    await ctx.send(f"📨 {ctx.author.mention} your mass message has been sent for approval.")
 
 
 @bot.command()
