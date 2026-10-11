@@ -2,12 +2,15 @@ import os
 import json
 import csv
 import io
+import asyncio
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 from dotenv import load_dotenv
 
 
@@ -34,6 +37,15 @@ CONTENT_REQUEST_CHANNEL_NAME = (
 MANAGER_ROUTING_CHANNEL_NAME = (
     os.getenv("MANAGER_ROUTING_CHANNEL_NAME") or "manager-routing"
 ).strip().lower().replace("#", "")
+
+# Private ticket settings. Use the EXACT role names from your server.
+TICKET_CATEGORY_NAME = (os.getenv("TICKET_CATEGORY_NAME") or "tickets").strip()
+TICKET_SUPERVISOR_ROLES = (
+    os.getenv("TICKET_SUPERVISOR_ROLES") or "Supervisor,Supervisors"
+)
+TICKET_MANAGER_ROLES = (
+    os.getenv("TICKET_MANAGER_ROLES") or "Manager,Managers"
+)
 
 TZ = ZoneInfo("Europe/Berlin")
 
@@ -78,7 +90,8 @@ def load_clock_data():
             "clocked_in_channels": {},
             "announcement_batches": [],
             "streaks": {},
-            "mma_requests": {}
+            "mma_requests": {},
+            "tickets": {}
         }
 
     with open(DATA_FILE, "r") as f:
@@ -101,6 +114,9 @@ def load_clock_data():
 
     if "mma_requests" not in data:
         data["mma_requests"] = {}
+
+    if "tickets" not in data:
+        data["tickets"] = {}
 
     for channel_name, value in list(
         data["clocked_in_channels"].items()
@@ -1770,6 +1786,455 @@ class MMAApprovalView(discord.ui.View):
 
     async def decline_callback(self, interaction):
         await handle_mma_decision(interaction, self.request_id, "declined")
+
+
+# =========================
+# PRIVATE TICKET SYSTEM
+# =========================
+# /new works in any guild text channel. Each user gets one open ticket.
+# Only the requester, configured Supervisor/Manager roles, and the bot
+# are explicitly granted access. Server administrators can always bypass
+# channel permissions; this is a Discord platform limitation.
+
+ticket_create_lock = asyncio.Lock()
+
+
+def get_ticket_staff_roles(guild):
+    """Return matching staff roles and which configured groups are missing."""
+    def matching_roles(csv_names):
+        names = {
+            normalize_name(name)
+            for name in csv_names.split(",")
+            if normalize_name(name)
+        }
+        return [
+            role for role in guild.roles
+            if normalize_name(role.name) in names
+        ]
+
+    supervisors = matching_roles(TICKET_SUPERVISOR_ROLES)
+    managers = matching_roles(TICKET_MANAGER_ROLES)
+    unique_roles = list({r.id: r for r in supervisors + managers}.values())
+    return unique_roles, supervisors, managers
+
+
+def ticket_overwrites(guild, requester, staff_roles):
+    """Do not sync permissions from the category; set them per ticket."""
+    visible = discord.PermissionOverwrite(
+        view_channel=True,
+        send_messages=True,
+        read_message_history=True,
+        attach_files=True,
+        embed_links=True,
+        add_reactions=True,
+    )
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        requester: visible,
+    }
+    for role in staff_roles:
+        overwrites[role] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+            embed_links=True,
+            add_reactions=True,
+        )
+    if guild.me is not None:
+        overwrites[guild.me] = discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_channels=True,
+            manage_messages=True,
+            embed_links=True,
+        )
+    return overwrites
+
+
+def get_open_ticket_channel(guild, user_id):
+    """Find the user's active ticket; forget deleted channels."""
+    dirty = False
+    for channel_id, info in list(clock_data.setdefault("tickets", {}).items()):
+        if (
+            str(info.get("guild_id")) != str(guild.id)
+            or str(info.get("opener_id")) != str(user_id)
+            or info.get("status") != "open"
+        ):
+            continue
+        channel = guild.get_channel(int(channel_id))
+        if isinstance(channel, discord.TextChannel):
+            return channel
+        clock_data["tickets"].pop(channel_id, None)
+        dirty = True
+    if dirty:
+        save_clock_data()
+    return None
+
+
+def get_ticket_for_channel(channel):
+    if not isinstance(channel, discord.TextChannel):
+        return None
+    ticket = clock_data.setdefault("tickets", {}).get(str(channel.id))
+    if ticket and str(ticket.get("guild_id")) == str(channel.guild.id):
+        return ticket
+    return None
+
+
+def is_ticket_staff(member):
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild_permissions.administrator:
+        return True
+    roles, _, _ = get_ticket_staff_roles(member.guild)
+    allowed_ids = {role.id for role in roles}
+    return any(role.id in allowed_ids for role in member.roles)
+
+
+def can_close_ticket(member, ticket):
+    return (
+        str(member.id) == str(ticket.get("opener_id"))
+        or is_ticket_staff(member)
+    )
+
+
+async def close_ticket_now(interaction):
+    channel = interaction.channel
+    ticket = get_ticket_for_channel(channel)
+    if not ticket or ticket.get("status") != "open":
+        await interaction.response.send_message(
+            "❌ This is not an open ticket.", ephemeral=True
+        )
+        return
+    if not can_close_ticket(interaction.user, ticket):
+        await interaction.response.send_message(
+            "❌ Only the ticket creator, Supervisors or Managers can close it.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    opener_id = int(ticket["opener_id"])
+    opener = channel.guild.get_member(opener_id)
+    if opener is None:
+        try:
+            opener = await channel.guild.fetch_member(opener_id)
+        except discord.NotFound:
+            opener = None  # They left the server; no active access.
+        except discord.HTTPException:
+            await interaction.followup.send(
+                "❌ Could not verify the ticket creator. Try again.",
+                ephemeral=True,
+            )
+            return
+
+    # Closing archives the ticket; it does NOT delete the conversation.
+    # The requester loses access, while staff can review the history.
+    try:
+        if opener is not None:
+            await channel.set_permissions(
+                opener,
+                overwrite=discord.PermissionOverwrite(
+                    view_channel=False,
+                    send_messages=False,
+                    read_message_history=False,
+                ),
+                reason=f"Ticket closed by {interaction.user} ({interaction.user.id})",
+            )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "❌ I need Manage Roles/Manage Channels to close this ticket.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException as exc:
+        await interaction.followup.send(
+            f"❌ Discord could not update ticket access: {exc}",
+            ephemeral=True,
+        )
+        return
+
+    ticket["status"] = "closed"
+    ticket["closed_by"] = str(interaction.user.id)
+    ticket["closed_at"] = datetime.now(TZ).isoformat()
+    save_clock_data()
+
+    try:
+        if not channel.name.startswith("closed-"):
+            new_name = "closed-" + channel.name.removeprefix("ticket-")
+            await channel.edit(name=new_name[:100], reason="Ticket closed")
+    except discord.HTTPException as exc:
+        print(f"Ticket renamed failed for {channel.id}: {exc}")
+
+    try:
+        message_id = ticket.get("control_message_id")
+        if message_id:
+            control_message = await channel.fetch_message(int(message_id))
+            await control_message.edit(view=TicketCloseView(disabled=True))
+    except discord.HTTPException as exc:
+        print(f"Ticket close button update failed for {channel.id}: {exc}")
+
+    try:
+        await channel.send(
+            f"🔒 **Ticket closed** by {interaction.user.mention}. "
+            "The requester can no longer see this channel. "
+            "The conversation remains available to Supervisors and Managers.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.HTTPException:
+        pass
+
+    await interaction.followup.send(
+        "🔒 Ticket closed and archived. Staff can still review the conversation.",
+        ephemeral=True,
+    )
+
+
+class TicketCloseConfirmView(discord.ui.View):
+    def __init__(self, channel_id):
+        super().__init__(timeout=60)
+        self.channel_id = channel_id
+
+    @discord.ui.button(label="Yes, close", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.channel_id != self.channel_id:
+            await interaction.response.send_message(
+                "❌ This confirmation belongs to another ticket.", ephemeral=True
+            )
+            return
+        await close_ticket_now(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            content="Ticket closing cancelled.", view=None
+        )
+
+
+async def ask_to_close_ticket(interaction):
+    ticket = get_ticket_for_channel(interaction.channel)
+    if not ticket or ticket.get("status") != "open":
+        await interaction.response.send_message(
+            "❌ This command works only inside an open ticket.", ephemeral=True
+        )
+        return
+    if not can_close_ticket(interaction.user, ticket):
+        await interaction.response.send_message(
+            "❌ Only the ticket creator, Supervisors or Managers can close it.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        "🔒 Close this ticket? The requester will lose access, "
+        "but the conversation will be saved for staff.",
+        view=TicketCloseConfirmView(interaction.channel_id),
+        ephemeral=True,
+    )
+
+
+class TicketCloseView(discord.ui.View):
+    """One persistent button handler for every ticket, including after restarts."""
+    def __init__(self, disabled=False):
+        super().__init__(timeout=None)
+        for item in self.children:
+            item.disabled = disabled
+
+    @discord.ui.button(
+        label="Close Ticket",
+        emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="skenzzy:ticket:close:v1",
+    )
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await ask_to_close_ticket(interaction)
+
+
+@bot.tree.command(name="new", description="Open a private support ticket")
+@app_commands.guild_only()
+@app_commands.describe(reason="What do you need help with? (optional)")
+async def new_ticket(interaction: discord.Interaction, reason: str = ""):
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message(
+            "❌ Tickets can only be opened inside the server.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    requester = interaction.user
+
+    async with ticket_create_lock:
+        existing = get_open_ticket_channel(guild, requester.id)
+        if existing is not None:
+            await interaction.followup.send(
+                f"🎫 You already have an open ticket: {existing.mention}",
+                ephemeral=True,
+            )
+            return
+
+        staff_roles, supervisors, managers = get_ticket_staff_roles(guild)
+        if not supervisors or not managers:
+            missing = []
+            if not supervisors:
+                missing.append("Supervisor")
+            if not managers:
+                missing.append("Manager")
+            await interaction.followup.send(
+                "❌ Ticket setup is incomplete: could not find the "
+                + " and ".join(missing)
+                + " role(s). An admin must set the exact role names in "
+                "`TICKET_SUPERVISOR_ROLES` and `TICKET_MANAGER_ROLES` on Railway.",
+                ephemeral=True,
+            )
+            return
+
+        if guild.me is not None and not guild.me.guild_permissions.manage_channels:
+            await interaction.followup.send(
+                "❌ I need **Manage Channels** to create private tickets.",
+                ephemeral=True,
+            )
+            return
+
+        category = next(
+            (c for c in guild.categories if normalize_name(c.name) == normalize_name(TICKET_CATEGORY_NAME)),
+            None,
+        )
+        if category is None:
+            category_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False)
+            }
+            for role in staff_roles:
+                category_overwrites[role] = discord.PermissionOverwrite(view_channel=True)
+            if guild.me is not None:
+                category_overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True)
+            try:
+                category = await guild.create_category(
+                    TICKET_CATEGORY_NAME,
+                    overwrites=category_overwrites,
+                    reason="Skenzzy private ticket category",
+                )
+            except discord.HTTPException as exc:
+                await interaction.followup.send(
+                    f"❌ Could not create ticket category: {exc}", ephemeral=True
+                )
+                return
+
+        base_name = re.sub(r"[^a-z0-9]+", "-", requester.display_name.lower()).strip("-")
+        base_name = (base_name or "member")[:22].strip("-")
+        channel_name = f"ticket-{base_name}-{requester.id % 1000000:06d}"
+        try:
+            channel = await guild.create_text_channel(
+                channel_name,
+                category=category,
+                overwrites=ticket_overwrites(guild, requester, staff_roles),
+                topic=f"Skenzzy support ticket | Creator ID: {requester.id}",
+                reason=f"Private ticket opened by {requester} ({requester.id})",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ I don't have permission to create a private ticket channel. "
+                "Give the bot Manage Channels and Manage Roles.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as exc:
+            await interaction.followup.send(
+                f"❌ Could not create ticket channel: {exc}", ephemeral=True
+            )
+            return
+
+        ticket = {
+            "guild_id": str(guild.id),
+            "opener_id": str(requester.id),
+            "origin_channel_id": str(interaction.channel_id),
+            "created_at": datetime.now(TZ).isoformat(),
+            "status": "open",
+            "reason": reason[:1000],
+            "control_message_id": None,
+        }
+        clock_data.setdefault("tickets", {})[str(channel.id)] = ticket
+        save_clock_data()
+
+        description = (
+            f"Welcome {requester.mention}! 👋\n\n"
+            "Describe your issue here and a staff member will assist you.\n\n"
+            "When the issue is resolved, press **Close Ticket**."
+        )
+        embed = discord.Embed(
+            title="🎫 Skenzzy Support",
+            description=description,
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(TZ),
+        )
+        if reason.strip():
+            safe_reason = discord.utils.escape_mentions(reason.strip())
+            embed.add_field(
+                name="Reason",
+                value=safe_reason[:1000],
+                inline=False,
+            )
+        embed.set_footer(text=f"Ticket #{channel.id}")
+        try:
+            control_message = await channel.send(
+                content=requester.mention,
+                embed=embed,
+                view=TicketCloseView(),
+                allowed_mentions=discord.AllowedMentions(users=[requester], roles=False, everyone=False),
+            )
+            ticket["control_message_id"] = str(control_message.id)
+            save_clock_data()
+        except discord.HTTPException as exc:
+            # Do not leave a broken channel or a stale open ticket.
+            clock_data["tickets"].pop(str(channel.id), None)
+            save_clock_data()
+            try:
+                await channel.delete(reason="Ticket initialization failed")
+            except discord.HTTPException:
+                pass
+            await interaction.followup.send(
+                f"❌ Ticket was created but I couldn't post its welcome message: {exc}",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            f"🎫 Your private ticket is ready: {channel.mention}",
+            ephemeral=True,
+        )
+
+
+@bot.tree.command(name="close", description="Close the current private support ticket")
+@app_commands.guild_only()
+async def close_ticket_command(interaction: discord.Interaction):
+    await ask_to_close_ticket(interaction)
+
+
+@bot.event
+async def setup_hook():
+    # Register persistent ticket close buttons once, even after bot restarts.
+    bot.add_view(TicketCloseView())
+
+    # Guild sync makes /new and /close appear immediately on this server.
+    # Without GUILD_ID, global commands may take time to propagate.
+    try:
+        if GUILD_ID:
+            guild_object = discord.Object(id=GUILD_ID)
+            bot.tree.copy_global_to(guild=guild_object)
+            synced = await bot.tree.sync(guild=guild_object)
+            print(f"Synced {len(synced)} slash commands to guild {GUILD_ID}.")
+        else:
+            synced = await bot.tree.sync()
+            print(f"Synced {len(synced)} global slash commands.")
+    except discord.HTTPException as exc:
+        print(f"Ticket slash command sync failed: {exc}")
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    if str(channel.id) in clock_data.setdefault("tickets", {}):
+        clock_data["tickets"].pop(str(channel.id), None)
+        save_clock_data()
 
 
 mma_views_registered = False
