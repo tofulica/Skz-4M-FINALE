@@ -1914,79 +1914,35 @@ async def close_ticket_now(interaction):
         )
         return
 
+    # Confirm the interaction before Discord removes its source channel.
     await interaction.response.defer(ephemeral=True, thinking=True)
-    opener_id = int(ticket["opener_id"])
-    opener = channel.guild.get_member(opener_id)
-    if opener is None:
-        try:
-            opener = await channel.guild.fetch_member(opener_id)
-        except discord.NotFound:
-            opener = None  # They left the server; no active access.
-        except discord.HTTPException:
-            await interaction.followup.send(
-                "❌ Could not verify the ticket creator. Try again.",
-                ephemeral=True,
-            )
-            return
 
-    # Closing archives the ticket; it does NOT delete the conversation.
-    # The requester loses access, while staff can review the history.
+    # Permanently delete the Discord channel and its entire conversation.
+    # No archived/closed channel, no transcript and no staff history are kept.
     try:
-        if opener is not None:
-            await channel.set_permissions(
-                opener,
-                overwrite=discord.PermissionOverwrite(
-                    view_channel=False,
-                    send_messages=False,
-                    read_message_history=False,
-                ),
-                reason=f"Ticket closed by {interaction.user} ({interaction.user.id})",
-            )
+        await channel.delete(
+            reason=f"Ticket permanently deleted by {interaction.user} ({interaction.user.id})"
+        )
     except discord.Forbidden:
         await interaction.followup.send(
-            "❌ I need Manage Roles/Manage Channels to close this ticket.",
+            "❌ I need **Manage Channels** permission to delete this ticket.",
             ephemeral=True,
         )
         return
     except discord.HTTPException as exc:
         await interaction.followup.send(
-            f"❌ Discord could not update ticket access: {exc}",
+            f"❌ Discord could not delete this ticket: {exc}",
             ephemeral=True,
         )
         return
 
-    ticket["status"] = "closed"
-    ticket["closed_by"] = str(interaction.user.id)
-    ticket["closed_at"] = datetime.now(TZ).isoformat()
+    # Remove persistent record so the opener can immediately use /new again.
+    # on_guild_channel_delete also performs this cleanup if Discord fires first.
+    clock_data.setdefault("tickets", {}).pop(str(channel.id), None)
     save_clock_data()
 
-    try:
-        if not channel.name.startswith("closed-"):
-            new_name = "closed-" + channel.name.removeprefix("ticket-")
-            await channel.edit(name=new_name[:100], reason="Ticket closed")
-    except discord.HTTPException as exc:
-        print(f"Ticket renamed failed for {channel.id}: {exc}")
-
-    try:
-        message_id = ticket.get("control_message_id")
-        if message_id:
-            control_message = await channel.fetch_message(int(message_id))
-            await control_message.edit(view=TicketCloseView(disabled=True))
-    except discord.HTTPException as exc:
-        print(f"Ticket close button update failed for {channel.id}: {exc}")
-
-    try:
-        await channel.send(
-            f"🔒 **Ticket closed** by {interaction.user.mention}. "
-            "The requester can no longer see this channel. "
-            "The conversation remains available to Supervisors and Managers.",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    except discord.HTTPException:
-        pass
-
     await interaction.followup.send(
-        "🔒 Ticket closed and archived. Staff can still review the conversation.",
+        "🗑️ Ticket closed. The channel and its messages have been permanently deleted.",
         ephemeral=True,
     )
 
@@ -1996,7 +1952,7 @@ class TicketCloseConfirmView(discord.ui.View):
         super().__init__(timeout=60)
         self.channel_id = channel_id
 
-    @discord.ui.button(label="Yes, close", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Yes, delete", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.channel_id != self.channel_id:
             await interaction.response.send_message(
@@ -2026,8 +1982,9 @@ async def ask_to_close_ticket(interaction):
         )
         return
     await interaction.response.send_message(
-        "🔒 Close this ticket? The requester will lose access, "
-        "but the conversation will be saved for staff.",
+        "🗑️ **Permanently delete this ticket?**\n"
+        "The channel and its entire conversation will be deleted for everyone. "
+        "**This cannot be undone.**",
         view=TicketCloseConfirmView(interaction.channel_id),
         ephemeral=True,
     )
@@ -2120,6 +2077,13 @@ async def new_ticket(interaction: discord.Interaction, reason: str = ""):
                 )
                 return
 
+        # Keep the Tickets category above other categories even if it already exists.
+        # Discord may still display uncategorized channels above category sections.
+        try:
+            await category.move(beginning=True, reason="Keep Skenzzy tickets at the top")
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"TICKET POSITION WARNING | Could not move tickets category: {exc}")
+
         base_name = re.sub(r"[^a-z0-9]+", "-", requester.display_name.lower()).strip("-")
         base_name = (base_name or "member")[:22].strip("-")
         channel_name = f"ticket-{base_name}-{requester.id % 1000000:06d}"
@@ -2143,6 +2107,17 @@ async def new_ticket(interaction: discord.Interaction, reason: str = ""):
                 f"❌ Could not create ticket channel: {exc}", ephemeral=True
             )
             return
+
+        # Show each newly opened ticket first inside the Tickets category.
+        # Ticket creation should still succeed if Discord denies reordering.
+        try:
+            await channel.move(
+                beginning=True,
+                category=category,
+                reason="Place new Skenzzy ticket first inside its category",
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"TICKET POSITION WARNING | Could not move new ticket to top: {exc}")
 
         ticket = {
             "guild_id": str(guild.id),
